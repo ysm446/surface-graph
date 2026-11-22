@@ -76,6 +76,30 @@ uint32_t ClampResolution(uint32_t resolution) {
     return result;
 }
 
+TextureSize GraphSize(const Graph& graph) { return {ClampResolution(graph.width), ClampResolution(graph.height)}; }
+
+TextureSize EvaluationSize(const Graph& graph, uint32_t shortSide) {
+    TextureSize size = GraphSize(graph);
+    if (shortSide == 0) return size;
+    // 2 のべき同士なので、縦横比は必ず整数（1, 2, 4, 8, 16）。
+    const bool wide = (size.width >= size.height);
+    const uint32_t aspect = wide ? size.width / size.height : size.height / size.width;
+    uint32_t side = std::clamp(shortSide, 16u, kMaxResolution);
+    // 長い辺が上限を超えないところまで短い辺を下げる。
+    while (side > 16u && side * aspect > kMaxResolution) side /= 2;
+    return wide ? TextureSize{side * aspect, side} : TextureSize{side, side * aspect};
+}
+
+TextureSize NodeSize(const Node& node, TextureSize base) {
+    const auto shifted = [](uint32_t value, int shift) {
+        shift = std::clamp(shift, -4, 4);
+        for (; shift > 0; --shift) value *= 2;
+        for (; shift < 0; ++shift) value /= 2;
+        return std::clamp(value, 16u, kMaxResolution);
+    };
+    return {shifted(base.width, node.resolutionShiftX), shifted(base.height, node.resolutionShiftY)};
+}
+
 Node* Graph::FindNode(uint64_t id) {
     for (Node& node : nodes) {
         if (node.id == id) return &node;

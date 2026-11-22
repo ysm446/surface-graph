@@ -38,7 +38,9 @@ cbuffer PreviewParams : register(b1) {
     float3 gLightDirection;  // 光が来る方向（面から光源へ）
     float gLightIntensity;
     float gEnvironmentIntensity;
-    float3 gPadding;
+    // UV の倍率（タイル数 ÷ 縦横比）。正方形でないマップでも、テクセルが正方形のまま貼られる。
+    float2 gUvScale;
+    float gPadding;
 };
 
 SamplerState gLinearWrap : register(s2);
@@ -157,7 +159,7 @@ Hit IntersectSphere(float3 origin, float3 direction) {
     // 経度 × 緯度。横は縦の 2 倍の長さがあるので、横に 2 枚ぶん貼ってテクセルを正方形に近づける。
     const float longitude = atan2(hit.normal.z, hit.normal.x);
     const float latitude = acos(clamp(hit.normal.y, -1.0, 1.0));
-    hit.uv = float2(longitude / PI, latitude / PI) * gTiling;
+    hit.uv = float2(longitude / PI, latitude / PI) * gUvScale;
     hit.tangent = normalize(float3(-hit.normal.z, 0.0, hit.normal.x) + float3(1e-5, 0.0, 0.0));
     hit.bitangent = normalize(cross(hit.normal, hit.tangent));
     return hit;
@@ -174,10 +176,14 @@ Hit IntersectPlane(float3 origin, float3 direction) {
     if (direction.y >= -1e-5) return hit;
     const float t = -origin.y / direction.y;
     const float3 position = origin + direction * t;
-    if (t <= 0.0 || abs(position.x) > 1.0 || abs(position.z) > 1.0) return hit;
+    // 平面はマップの縦横比に合わせる（長い辺が 2、短い辺はその比率ぶん）。2048×512 なら 2 × 0.5。
+    // gUvScale は縦横比の逆数に比例するので、小さいほうで割ると (長い辺 1, 短い辺 比率) になる。
+    const float2 halfSize = min(gUvScale.x, gUvScale.y) / gUvScale;
+    if (t <= 0.0 || abs(position.x) > halfSize.x || abs(position.z) > halfSize.y) return hit;
     hit.valid = true;
     hit.position = position;
-    hit.uv = (position.xz * 0.5 + 0.5) * gTiling;
+    // 平面 1 枚にマップ 1 枚（× タイル数）。平面が縦横比どおりなので、テクセルは正方形になる。
+    hit.uv = (position.xz / halfSize * 0.5 + 0.5) * gTiling;
     return hit;
 }
 
@@ -188,7 +194,7 @@ float2 ParallaxUv(float2 uv, float3 viewTangent) {
     if (!Connected(5) || gDisplacementScale <= 0.0) return uv;
     const int kSteps = 32;
     // 1 段で進む UV。視線が寝るほど長く進む（寝すぎたときは上限を置く）。
-    const float2 maxOffset = viewTangent.xy / max(viewTangent.z, 0.15) * gDisplacementScale * gTiling;
+    const float2 maxOffset = viewTangent.xy / max(viewTangent.z, 0.15) * gDisplacementScale * gUvScale;
     const float layer = 1.0 / float(kSteps);
     float depth = 0.0;
     float2 current = uv + maxOffset * 0.5;  // 基準面（0.5）より上から始める

@@ -269,21 +269,18 @@ void Application::DrawGraphNode(const graph::Node& node) {
     // サムネイル（1 つ目の出力）。ピンの下、中央に置く。
     ImGui::Dummy({width, 6.0f});
     ImGui::SetCursorPosX(rowStartX + (width - thumbnail) * 0.5f);
-    ui::ThumbnailImage(NodeThumbnail(node.id, 0), thumbnail);
+    // 正方形でない出力は、枠の中に縦横比を保って収める。
+    const graph::TextureSize nodeSize = graph::NodeSize(node, graph::GraphSize(m_graph));
+    ui::ThumbnailImage(NodeThumbnail(node.id, 0), thumbnail, static_cast<float>(nodeSize.width) / static_cast<float>(nodeSize.height));
 
     // 一番下に、このノードの解像度（グラフの解像度 × ノードごとの倍率）。
     {
-        int shift = std::clamp(node.resolutionShift, -4, 4);
-        uint32_t resolution = m_graph.resolution;
-        for (; shift > 0; --shift) resolution *= 2;
-        for (; shift < 0; ++shift) resolution /= 2;
-        resolution = std::clamp(resolution, 16u, graph::kMaxResolution);
         ImGui::Dummy({width, 4.0f});
         // 形式も添える。Gray は 1 チャンネル（L16F）、Color は 4 チャンネル（RGBA16F）。どちらも 16 bit 浮動小数。
         const bool color = (m_graph.ResolveOutputType(node.id, 0) == graph::PinType::Color);
         // 補助の情報なので、文字は一回り小さくする。
         ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.8f);
-        ImGui::TextDisabled("%u × %u  %s", resolution, resolution, color ? "RGBA16F" : "L16F");
+        ImGui::TextDisabled("%u × %u  %s", nodeSize.width, nodeSize.height, color ? "RGBA16F" : "L16F");
         ImGui::PopFont();
     }
 

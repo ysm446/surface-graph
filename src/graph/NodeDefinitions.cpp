@@ -97,6 +97,7 @@ const L kScaleTip = {"タイルの数。整数なので、どの値でも繋ぎ�
 uint32_t TwoPasses(const Node&, uint32_t) { return 2; }
 
 // Distance: 種まき 1 + Jump Flooding log2(N) + 距離の書き出し 1。
+// resolution は長い辺。
 uint32_t DistancePasses(const Node&, uint32_t resolution) {
     uint32_t steps = 0;
     for (uint32_t r = resolution; r > 1; r /= 2) ++steps;

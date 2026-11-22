@@ -8,14 +8,14 @@ cbuffer SgNode : register(b0) {
     uint4 sgOut;         // 出力 UAV のインデックス（出力ピンの番号順）。途中のパスでは x が中間テクスチャ
     uint4 sgIn03;        // 入力 SRV のインデックス（入力ピン 0〜3）
     uint4 sgIn47;        // 入力ピン 4〜7
-    uint sgResolution;   // このノードの出力の一辺（ピクセル）
+    uint sgWidth;        // このノードの出力の幅（ピクセル）
     uint sgSeed;         // グローバルシードとノードのシードを混ぜた値
     uint sgConnected;    // ビット i が立っていれば入力ピン i は繋がっている
     uint sgColorMask;    // ビット i が立っていれば入力ピン i は Color（立っていなければ Gray）
     uint sgPass;         // 複数パスのノードの、いまのパス番号
     uint sgPassCount;    // パスの総数
     uint sgPrevIndex;    // 前のパスの結果（SRV）。パス 0 では無効
-    uint sgReserved;
+    uint sgHeight;       // このノードの出力の高さ（ピクセル）
 };
 
 // b1: パラメータ。宣言はノード定義（src/graph/NodeDefinitions.cpp）から自動生成して
@@ -36,8 +36,23 @@ static const float SG_TAU = 6.28318530717959;
 
 // --- 座標 -------------------------------------------------------------------
 // 座標はすべて UV（0〜1）。半径や強度も UV 単位で持ち、解像度に依存させない。
-float2 sg_uv(uint2 pixel) { return (float2(pixel) + 0.5) / float(sgResolution); }
-float sg_texel() { return 1.0 / float(sgResolution); }
+//
+// 出力は正方形とは限らない（1024×256 など）。**距離の 1 は「短い辺の長さ」**と決める。
+// 縦横比 sg_aspect() は (長い辺 / 短い辺) を軸ごとに持つ整数で、1024×256 なら (4, 1)。
+//   - 距離の単位の差 d を UV の差にするには sg_offset(d)（= d / sg_aspect()）。
+//   - 模様を作るノードは、格子の数に sg_aspect_i() を掛ける（長い辺の分割が自動で増え、マスが正方形になる）。
+//   - タイルの中央に 1 つ置く形は sg_tile_uv() を使う（正方形の単位タイルを長い辺に並べる）。
+float2 sg_size() { return float2(float(sgWidth), float(sgHeight)); }
+float sg_short_side() { return float(min(sgWidth, sgHeight)); }
+int2 sg_aspect_i() { return int2(int(sgWidth), int(sgHeight)) / int(min(sgWidth, sgHeight)); }
+float2 sg_aspect() { return float2(sg_aspect_i()); }
+float2 sg_uv(uint2 pixel) { return (float2(pixel) + 0.5) / sg_size(); }
+// 1 ピクセルの大きさ（距離の単位）。
+float sg_texel() { return 1.0 / sg_short_side(); }
+// 距離の単位のベクトルを UV の差にする。
+float2 sg_offset(float2 d) { return d / sg_aspect(); }
+// 正方形の単位タイルの中の座標（0〜1）。正方形の出力では uv そのもの。
+float2 sg_tile_uv(float2 uv) { return frac(uv * sg_aspect()); }
 
 // --- 入力 -------------------------------------------------------------------
 uint sg_input_index(uint i) { return (i < 4) ? sgIn03[i] : sgIn47[i - 4]; }
@@ -78,7 +93,7 @@ float4 sg_prev(float2 uv) {
 }
 float4 sg_prev_load(int2 pixel) {
     Texture2D<float4> tex = ResourceDescriptorHeap[sgPrevIndex];
-    const int size = int(sgResolution);
+    const int2 size = int2(int(sgWidth), int(sgHeight));
     return tex.Load(int3(((pixel % size) + size) % size, 0));
 }
 

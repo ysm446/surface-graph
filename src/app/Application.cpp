@@ -172,7 +172,15 @@ int Application::Run() {
         engine::EvaluateRequest request;
         request.graph = &m_graph;
         request.budgetMegapixels = Headless() ? 0.0f : kFrameBudgetMegapixels;
-        if (m_interactive) request.resolution = std::max(256u, graph::ClampResolution(m_graph.resolution) / 4);
+        if (m_interactive) {
+            // 縦横比を保ったまま 1/4 まで下げる。長い辺は 256 を下回らせない。
+            graph::TextureSize size = graph::GraphSize(m_graph);
+            for (int i = 0; i < 2 && std::max(size.width, size.height) / 2 >= 256u && std::min(size.width, size.height) / 2 >= 16u; ++i) {
+                size.width /= 2;
+                size.height /= 2;
+            }
+            request.resolution = std::min(size.width, size.height);
+        }
         m_evaluationComplete = m_evaluator.Evaluate(commandList, request);
         if (m_view3dVisible && m_view3dWidth > 0 && m_view3dHeight > 0) {
             m_preview.Render(commandList, m_graph, m_evaluator, m_previewSettings, m_view3dWidth, m_view3dHeight);
@@ -282,8 +290,8 @@ void Application::DrawStatusBar() {
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar;
     if (ImGui::BeginViewportSideBar("##statusBar", viewport, ImGuiDir_Down, ImGui::GetFrameHeight(), flags)) {
         if (ImGui::BeginMenuBar()) {
-            const uint32_t resolution = graph::ClampResolution(m_graph.resolution);
-            ImGui::Text("%u x %u", resolution, resolution);
+            const graph::TextureSize graphSize = graph::GraphSize(m_graph);
+            ImGui::Text("%u x %u", graphSize.width, graphSize.height);
             ImGui::TextDisabled("|");
             ImGui::Text(ui::Tr("ノード %zu", "%zu nodes"), m_graph.nodes.size());
             ImGui::TextDisabled("|");

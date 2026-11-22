@@ -7,9 +7,9 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float2 uv = sg_uv(id.xy);
     const bool vertical = (sgPass == 1u);
     // 片側のタップ数。半径がピクセル数より大きいときは間隔を広げる（線形補間で拾う）。
-    const int taps = clamp(int(ceil(radius * float(sgResolution))), 0, 48);
+    const int taps = clamp(int(ceil(radius * sg_short_side())), 0, 48);
     const float stepUv = (taps > 0) ? radius / float(taps) : 0.0;
-    const float2 direction = vertical ? float2(0.0, stepUv) : float2(stepUv, 0.0);
+    const float2 direction = sg_offset(vertical ? float2(0.0, stepUv) : float2(stepUv, 0.0));
     const float sigma = max(float(taps) * 0.5, 1e-3);
     float4 sum = 0.0;
     float total = 0.0;

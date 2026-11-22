@@ -3,7 +3,7 @@
 // ノードを足したり直したりしたら、まずここで画像に書き出して目で確かめる。
 // 使い方は docs/reference/cli.md。
 //
-//   surfgraph-cli render <graph> --out <dir> [--res N] [--seed S]
+//   surfgraph-cli render <graph> --out <dir> [--res N] [--width W --height H] [--seed S]
 //   surfgraph-cli check  <graph> [--res N] [--no-seamless] [--no-resolution]
 //   surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]
 //   surfgraph-cli nodes [--markdown]
@@ -42,7 +42,9 @@ struct Options {
     std::wstring command;
     std::filesystem::path graphPath;
     std::filesystem::path outDirectory;
-    uint32_t resolution = 0;
+    uint32_t resolution = 0;  // 短い辺。0 ならグラフのまま
+    uint32_t width = 0;       // グラフの大きさの上書き（0 ならグラフのまま）
+    uint32_t height = 0;
     bool hasSeed = false;
     uint32_t seed = 0;
     bool update = false;
@@ -84,7 +86,8 @@ struct Image {
     int output = 0;
     std::string name;  // "<nodeId>_<type>" (+ "_<出力名>")
     bool color = false;
-    uint32_t size = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
     std::vector<float> rgba;
 };
 
@@ -122,7 +125,8 @@ bool RenderAll(Gpu& gpu, const graph::Graph& graph, uint32_t resolution, std::ve
             image.name = std::to_string(node.id) + "_" + FileSafe(node.def->type);
             if (result->outputs.size() > 1) image.name += std::string("_") + node.def->outputs[i].name;
             image.color = (result->outputs[i].type == graph::PinType::Color);
-            image.size = result->outputs[i].texture.texture.width;
+            image.width = result->outputs[i].texture.texture.width;
+            image.height = result->outputs[i].texture.texture.height;
             if (!engine::ReadTexture(gpu.device, result->outputs[i].texture.texture, image.rgba)) {
                 std::printf("ノード %llu の読み戻しに失敗しました\n", static_cast<unsigned long long>(node.id));
                 ok = false;
@@ -140,8 +144,8 @@ uint8_t ToByte(float value) {
 }
 
 std::vector<uint8_t> ToRgb8(const Image& image) {
-    std::vector<uint8_t> pixels(static_cast<size_t>(image.size) * image.size * 3);
-    for (size_t i = 0; i < static_cast<size_t>(image.size) * image.size; ++i) {
+    std::vector<uint8_t> pixels(static_cast<size_t>(image.width) * image.height * 3);
+    for (size_t i = 0; i < static_cast<size_t>(image.width) * image.height; ++i) {
         for (size_t c = 0; c < 3; ++c) pixels[i * 3 + c] = ToByte(image.rgba[i * 4 + c]);
     }
     return pixels;
@@ -149,10 +153,10 @@ std::vector<uint8_t> ToRgb8(const Image& image) {
 
 bool SavePng(const std::filesystem::path& path, const Image& image) {
     const std::vector<uint8_t> rgb = ToRgb8(image);
-    if (image.color) return SaveRgb8Png(path, image.size, image.size, image.size * 3, rgb.data());
-    std::vector<uint8_t> gray(static_cast<size_t>(image.size) * image.size);
+    if (image.color) return SaveRgb8Png(path, image.width, image.height, image.width * 3, rgb.data());
+    std::vector<uint8_t> gray(static_cast<size_t>(image.width) * image.height);
     for (size_t i = 0; i < gray.size(); ++i) gray[i] = rgb[i * 3];
-    return SaveGray8Png(path, image.size, image.size, image.size, gray.data());
+    return SaveGray8Png(path, image.width, image.height, image.width, gray.data());
 }
 
 // 全画像を升目に並べた一覧。左上から images の順。
@@ -167,20 +171,24 @@ bool SaveContactSheet(const std::filesystem::path& path, const std::vector<Image
         const Image& image = images[n];
         const uint32_t ox = gap + static_cast<uint32_t>(n % columns) * (cell + gap);
         const uint32_t oy = gap + static_cast<uint32_t>(n / columns) * (cell + gap);
-        for (uint32_t y = 0; y < cell; ++y) {
-            for (uint32_t x = 0; x < cell; ++x) {
+        // 正方形でない画像は、長い辺を升目に合わせて中央に置く。
+        const uint32_t longSide = std::max(image.width, image.height);
+        const uint32_t cellW = std::max(1u, cell * image.width / longSide), cellH = std::max(1u, cell * image.height / longSide);
+        const uint32_t padX = (cell - cellW) / 2, padY = (cell - cellH) / 2;
+        for (uint32_t y = 0; y < cellH; ++y) {
+            for (uint32_t x = 0; x < cellW; ++x) {
                 // 面積平均で縮める（細かいノイズが潰れて見えないように）。
-                const uint32_t x0 = x * image.size / cell, x1 = std::max(x0 + 1, (x + 1) * image.size / cell);
-                const uint32_t y0 = y * image.size / cell, y1 = std::max(y0 + 1, (y + 1) * image.size / cell);
+                const uint32_t x0 = x * image.width / cellW, x1 = std::max(x0 + 1, (x + 1) * image.width / cellW);
+                const uint32_t y0 = y * image.height / cellH, y1 = std::max(y0 + 1, (y + 1) * image.height / cellH);
                 float sum[3] = {};
                 for (uint32_t sy = y0; sy < y1; ++sy) {
                     for (uint32_t sx = x0; sx < x1; ++sx) {
-                        const float* p = &image.rgba[(static_cast<size_t>(sy) * image.size + sx) * 4];
+                        const float* p = &image.rgba[(static_cast<size_t>(sy) * image.width + sx) * 4];
                         for (int c = 0; c < 3; ++c) sum[c] += std::clamp(p[c], 0.0f, 1.0f);
                     }
                 }
                 const float scale = 1.0f / static_cast<float>((x1 - x0) * (y1 - y0));
-                uint8_t* out = &sheet[(static_cast<size_t>(oy + y) * width + ox + x) * 3];
+                uint8_t* out = &sheet[(static_cast<size_t>(oy + padY + y) * width + ox + padX + x) * 3];
                 for (int c = 0; c < 3; ++c) out[c] = ToByte(sum[c] * scale);
             }
         }
@@ -199,18 +207,20 @@ struct SeamStats {
 };
 
 SeamStats MeasureSeam(const Image& image, bool horizontal) {
-    const uint32_t n = image.size;
-    const auto at = [&](uint32_t x, uint32_t y, int c) { return image.rgba[(static_cast<size_t>(y) * n + x) * 4 + c]; };
+    // horizontal なら列同士（n = 幅、列の長さ m = 高さ）、そうでなければ行同士を比べる。
+    const uint32_t n = horizontal ? image.width : image.height;
+    const uint32_t m = horizontal ? image.height : image.width;
+    const auto at = [&](uint32_t x, uint32_t y, int c) { return image.rgba[(static_cast<size_t>(y) * image.width + x) * 4 + c]; };
     // j 番目と j+1 番目（n-1 の次は 0）の列（行）の差の平均。
     const auto pairDifference = [&](uint32_t j) {
         const uint32_t k = (j + 1) % n;
         double sum = 0.0;
-        for (uint32_t i = 0; i < n; ++i) {
+        for (uint32_t i = 0; i < m; ++i) {
             for (int c = 0; c < 3; ++c) {
                 sum += horizontal ? std::abs(at(j, i, c) - at(k, i, c)) : std::abs(at(i, j, c) - at(i, k, c));
             }
         }
-        return static_cast<float>(sum / (3.0 * n));
+        return static_cast<float>(sum / (3.0 * m));
     };
     SeamStats stats;
     stats.edge = pairDifference(n - 1);
@@ -220,18 +230,18 @@ SeamStats MeasureSeam(const Image& image, bool horizontal) {
 
 // 2×2 の平均で半分に縮める。
 std::vector<float> Halve(const Image& image) {
-    const uint32_t half = image.size / 2;
-    std::vector<float> out(static_cast<size_t>(half) * half * 4);
-    for (uint32_t y = 0; y < half; ++y) {
-        for (uint32_t x = 0; x < half; ++x) {
+    const uint32_t halfW = image.width / 2, halfH = image.height / 2;
+    std::vector<float> out(static_cast<size_t>(halfW) * halfH * 4);
+    for (uint32_t y = 0; y < halfH; ++y) {
+        for (uint32_t x = 0; x < halfW; ++x) {
             for (int c = 0; c < 4; ++c) {
                 float sum = 0.0f;
                 for (uint32_t dy = 0; dy < 2; ++dy) {
                     for (uint32_t dx = 0; dx < 2; ++dx) {
-                        sum += image.rgba[(static_cast<size_t>(y * 2 + dy) * image.size + x * 2 + dx) * 4 + c];
+                        sum += image.rgba[(static_cast<size_t>(y * 2 + dy) * image.width + x * 2 + dx) * 4 + c];
                     }
                 }
-                out[(static_cast<size_t>(y) * half + x) * 4 + c] = sum * 0.25f;
+                out[(static_cast<size_t>(y) * halfW + x) * 4 + c] = sum * 0.25f;
             }
         }
     }
@@ -260,7 +270,7 @@ int CommandRender(Gpu& gpu, const Options& options, const graph::Graph& graph) {
             std::printf("書き出せません: %ls\n", path.c_str());
             return 1;
         }
-        std::printf("  %s.png (%u px, %s)\n", image.name.c_str(), image.size, image.color ? "Color" : "Gray");
+        std::printf("  %s.png (%u x %u, %s)\n", image.name.c_str(), image.width, image.height, image.color ? "Color" : "Gray");
     }
     if (!images.empty()) SaveContactSheet(options.outDirectory / "contact_sheet.png", images);
     std::printf("%zu 枚を書き出しました: %ls\n", images.size(), options.outDirectory.c_str());
@@ -268,7 +278,9 @@ int CommandRender(Gpu& gpu, const Options& options, const graph::Graph& graph) {
 }
 
 int CommandCheck(Gpu& gpu, const Options& options, const graph::Graph& graph) {
-    const uint32_t resolution = (options.resolution != 0) ? options.resolution : graph.resolution;
+    // 短い辺。
+    const graph::TextureSize graphSize = graph::GraphSize(graph);
+    const uint32_t resolution = (options.resolution != 0) ? options.resolution : std::min(graphSize.width, graphSize.height);
     int failures = 0;
 
     std::vector<Image> first;
@@ -303,7 +315,7 @@ int CommandCheck(Gpu& gpu, const Options& options, const graph::Graph& graph) {
         gpu.evaluator.Clear();
         std::vector<Image> low;
         if (!RenderAll(gpu, graph, resolution / 2, low)) return 1;
-        std::printf("\n解像度非依存（%u px を縮小したものと %u px の平均誤差）\n", resolution, resolution / 2);
+        std::printf("\n解像度非依存（短い辺 %u px を縮小したものと %u px の平均誤差）\n", resolution, resolution / 2);
         for (size_t i = 0; i < first.size() && i < low.size(); ++i) {
             const float difference = MeanAbsDifference(Halve(first[i]), low[i].rgba);
             // 細い線を出すノード（縁の検出、曲率）は線の太さがピクセルに引きずられるので、少し余裕を持たせる。
@@ -336,7 +348,7 @@ int CommandGolden(Gpu& gpu, const Options& options, const graph::Graph& graph) {
             continue;
         }
         LdrImage golden;
-        if (!LoadLdrImage(path, golden) || golden.width != image.size || golden.height != image.size) {
+        if (!LoadLdrImage(path, golden) || golden.width != image.width || golden.height != image.height) {
             std::printf("  %-44s *** 基準画像がありません ***\n", image.name.c_str());
             ++failures;
             continue;
@@ -344,14 +356,14 @@ int CommandGolden(Gpu& gpu, const Options& options, const graph::Graph& graph) {
         const std::vector<uint8_t> actual = ToRgb8(image);
         int maxError = 0;
         double squared = 0.0;
-        for (size_t i = 0; i < static_cast<size_t>(image.size) * image.size; ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(image.width) * image.height; ++i) {
             for (size_t c = 0; c < 3; ++c) {
                 const int d = std::abs(static_cast<int>(actual[i * 3 + c]) - static_cast<int>(golden.pixels[i * 4 + c]));
                 maxError = std::max(maxError, d);
                 squared += static_cast<double>(d) * d;
             }
         }
-        const double mse = squared / (3.0 * image.size * image.size);
+        const double mse = squared / (3.0 * image.width * image.height);
         const double psnr = (mse > 0.0) ? 10.0 * std::log10(255.0 * 255.0 / mse) : 99.0;
         // 丸めの揺れ（1/255）は許し、見た目が変わる差は落とす。
         const bool ok = psnr >= 45.0 && maxError <= 8;
@@ -443,7 +455,7 @@ int CommandNodes(bool markdown) {
 
 void PrintUsage() {
     std::printf(
-        "surfgraph-cli render <graph> --out <dir> [--res N] [--seed S]\n"
+        "surfgraph-cli render <graph> --out <dir> [--res N] [--width W --height H] [--seed S]\n"
         "surfgraph-cli check  <graph> [--res N] [--no-seamless] [--no-resolution]\n"
         "surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]\n"
         "surfgraph-cli nodes [--markdown]\n");
@@ -463,6 +475,10 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring argument = argv[i];
         if ((argument == L"--out" || argument == L"--dir") && i + 1 < argc) {
             options.outDirectory = argv[++i];
+        } else if (argument == L"--width" && i + 1 < argc) {
+            options.width = static_cast<uint32_t>(std::clamp(::_wtoi(argv[++i]), 16, 4096));
+        } else if (argument == L"--height" && i + 1 < argc) {
+            options.height = static_cast<uint32_t>(std::clamp(::_wtoi(argv[++i]), 16, 4096));
         } else if (argument == L"--res" && i + 1 < argc) {
             options.resolution = static_cast<uint32_t>(std::clamp(::_wtoi(argv[++i]), 16, 4096));
         } else if (argument == L"--seed" && i + 1 < argc) {
@@ -501,6 +517,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     for (const std::string& warning : warnings) std::printf("警告: %s\n", warning.c_str());
     if (options.hasSeed) graph.seed = options.seed;
+    if (options.width != 0) graph.width = options.width;
+    if (options.height != 0) graph.height = options.height;
 
     Gpu gpu;
     if (!gpu.Create()) {

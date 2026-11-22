@@ -6,9 +6,9 @@
 void main(uint3 id : SV_DispatchThreadID) {
     const float2 uv = sg_uv(id.xy);
     float sum = 0.0, amplitude = 1.0, total = 0.0;
-    int period = max(scale, 1);
+    int2 period = max(scale, 1) * sg_aspect_i();
     for (int o = 0; o < octaves; ++o) {
-        sum += sg_value_noise(uv * float(period), period, sgSeed + uint(o) * 7919u) * amplitude;
+        sum += sg_value_noise(uv * float2(period), period, sgSeed + uint(o) * 7919u) * amplitude;
         total += amplitude;
         amplitude *= gain;
         period *= 2;

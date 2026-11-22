@@ -45,7 +45,8 @@ struct PreviewParams {
     float lightDirection[3];
     float lightIntensity;
     float environmentIntensity;
-    float padding[3];
+    float uvScale[2];
+    float padding;
 };
 
 struct Vec3 {
@@ -150,6 +151,11 @@ void MaterialPreview::Render(ID3D12GraphicsCommandList* commandList, const graph
     Store(params.lightDirection, light);
     params.tanHalfFov = std::tan(kFovY * 0.5f);
     params.tiling = std::max(settings.tiling, 0.01f);
+    // 正方形でないマップは、長い辺の繰り返しを縦横比のぶん減らす（テクセルを正方形に保つ）。
+    const graph::TextureSize graphSize = graph::GraphSize(graph);
+    const float shortSide = static_cast<float>(std::min(graphSize.width, graphSize.height));
+    params.uvScale[0] = params.tiling * shortSide / static_cast<float>(graphSize.width);
+    params.uvScale[1] = params.tiling * shortSide / static_cast<float>(graphSize.height);
     params.exposure = settings.exposure;
     params.displacementScale = settings.displacementScale;
     params.lightIntensity = settings.lightIntensity;

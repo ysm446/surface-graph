@@ -14,7 +14,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         float horizon = 0.0;
         for (int s = 1; s <= kSteps; ++s) {
             const float distance_ = radius * float(s) / float(kSteps);
-            const float rise = (sg_sample_gray(0, uv + direction * distance_) - h0) * heightScale;
+            const float rise = (sg_sample_gray(0, uv + sg_offset(direction * distance_)) - h0) * heightScale;
             horizon = max(horizon, rise / distance_);
         }
         // 仰角の sin。

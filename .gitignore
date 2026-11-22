@@ -19,3 +19,4 @@ data/
 # 手元に置いてあれば CMake が自動で組み込む（ctest で走る）。
 tests/
 graphs/tests/
+__pycache__/

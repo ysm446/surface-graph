@@ -5,9 +5,9 @@
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     const float2 uv = sg_uv(id.xy);
-    const float e = width;
-    const float right = sg_sample(0, uv + float2(e, 0.0)).x, left = sg_sample(0, uv - float2(e, 0.0)).x;
-    const float down = sg_sample(0, uv + float2(0.0, e)).y, up = sg_sample(0, uv - float2(0.0, e)).y;
+    const float2 ex = sg_offset(float2(width, 0.0)), ey = sg_offset(float2(0.0, width));
+    const float right = sg_sample(0, uv + ex).x, left = sg_sample(0, uv - ex).x;
+    const float down = sg_sample(0, uv + ey).y, up = sg_sample(0, uv - ey).y;
     const float vertical = (format == 1) ? (up - down) : (down - up);
     sg_write_gray(id.xy, saturate(0.5 + ((right - left) + vertical) * intensity));
 }

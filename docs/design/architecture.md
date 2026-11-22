@@ -1,7 +1,7 @@
 # architecture — 全体の設計
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 21:46
+更新日時: 2026-11-23 03:59
 
 ## 層の分け方
 
@@ -27,8 +27,8 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 
 | 要素 | 主なフィールド | 備考 |
 | --- | --- | --- |
-| Graph | `name`, `resolution`, `seed`, `nodes`, `links`, `exposedParams`, `nextId` | resolution は 2 のべき（256〜4096） |
-| Node | `id`, `def`, `pos`, `params`, `seedOffset`, `resolutionShift` | `def` はレジストリの要素を指す |
+| Graph | `name`, `width`, `height`, `seed`, `nodes`, `links`, `exposedParams`, `nextId` | 幅と高さはそれぞれ 2 のべき（256〜4096）。正方形でなくてよい |
+| Node | `id`, `def`, `pos`, `params`, `seedOffset`, `resolutionShiftX`, `resolutionShiftY` | `def` はレジストリの要素を指す |
 | Link | `id`, `fromNode`, `fromPin`, `toNode`, `toPin` | ピンは番号で持つ。入力ピンには 1 本まで |
 | ParamValue | `f[4]`, `i`, `gradient` | 型ごとに使う場所が決まっている |
 | NodeDef | `type`, `label`, `category`, `shader`, `inputs`, `outputs`, `params`, `usesSeed`, `passCount` | HLSL ファイルと 1 対 1 |
@@ -51,11 +51,14 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
    出力は UAV へ遷移させ、終わったら読み取り状態へ戻す。
 5. 1 回の呼び出しの予算（メガピクセル × パス数）を超えたら、残りは次の呼び出しへ持ち越す。
 
-- **テクスチャプール**: （解像度, 形式）が合う未使用のテクスチャを使い回す。寝かせておくのは 24 枚まで。
+- **テクスチャプール**: （幅, 高さ, 形式）が合う未使用のテクスチャを使い回す。寝かせておくのは 24 枚まで。
 - **複数パス**: `NodeDef::passCount` を持つノードは、パス i が パス i-1 の結果（`sg_prev`）を読み、
   最後のパスが出力へ書く。中間テクスチャは常に RGBA16F（Blur、Distance）。
 - **繋がっていない入力**には 1×1 の黒を渡す。繋がっているかは `sg_connected(i)` で分かる。
-- **スライダー操作中**は、エディタが `resolution` に 1/4（下限 256）を渡して低解像度で評価する。
+- **大きさ**: グラフの幅 × 高さ（`graph::GraphSize`）に、ノードごとの倍率を掛ける（`graph::NodeSize`）。
+  `EvaluateRequest::resolution` は短い辺の上書きで、長い辺は縦横比から決まる（`graph::EvaluationSize`）。
+  正方形でない出力での距離の扱いは [shader-conventions.md](shader-conventions.md)。
+- **スライダー操作中**は、エディタが縦横比を保ったまま 1/4（長い辺の下限 256）にして低解像度で評価する。
   解像度もハッシュに入るので、離すと自動でフル解像度の評価に戻る。
 - **エラー**: シェーダのコンパイルに失敗したノードは `NodeResult::error` に DXC のメッセージを持つ。
   エディタは赤い枠とツールチップで出す。

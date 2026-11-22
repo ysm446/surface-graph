@@ -5,7 +5,9 @@
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    const int2 gridI = int2(max(columns, 1), max(rows, 1));
+    // columns × rows は正方形の単位タイルあたりの数。長い辺には縦横比のぶん多く並べる。
+    const float2 baseGrid = float2(max(columns, 1), max(rows, 1));
+    const int2 gridI = int2(max(columns, 1), max(rows, 1)) * sg_aspect_i();
     const float2 grid = float2(gridI);
     const float2 g = sg_uv(id.xy) * grid;
     const int rowBase = int(floor(g.y));
@@ -26,10 +28,10 @@ void main(uint3 id : SV_DispatchThreadID) {
             const float3 h1 = sg_cell_hash(cell, gridI, sgSeed + 0x9E3779B9u);
             if (h1.z < mask) continue;
             const float2 center = float2(float(column) + 0.5 + shift, float(row) + 0.5) + (h0.xy - 0.5) * positionRandom;
-            // 回転は UV の空間で行う（マスが正方形でなくても形が歪まない）。
-            float2 local = (g - center) / grid;
+            // 回転は距離の空間で行う（マスが正方形でなくても形が歪まない）。
+            float2 local = (g - center) / baseGrid;
             local = sg_rotate(local, rotation + (h0.z - 0.5) * rotationRandom);
-            local *= grid;
+            local *= baseGrid;
             local /= max(scale * (1.0 - scaleRandom * h1.x), 1e-4);
             const float2 patternUv = local + 0.5;
             if (patternUv.x < 0.0 || patternUv.x > 1.0 || patternUv.y < 0.0 || patternUv.y > 1.0) continue;

@@ -213,11 +213,17 @@ void Application::DrawParameterPanel() {
         static const ui::LocalizedText kShiftItems[] = {
             {"1/4", "1/4"}, {"1/2", "1/2"}, {"グラフと同じ", "Same as Graph"}, {"2 倍", "2x"}, {"4 倍", "4x"}};
         const auto items = ui::Tr(kShiftItems);
-        int shiftIndex = std::clamp(node->resolutionShift, -2, 2) + 2;
-        if (ui::PropertyCombo(ui::Tr("解像度", "Resolution"), &shiftIndex, items.data(), static_cast<int>(items.size()), 2,
-                              ui::Tr("このノードだけ解像度を変える。重いノードを軽くしたいときに下げる。",
-                                     "Overrides the resolution of this node only. Lower it to make a heavy node cheaper."))) {
-            node->resolutionShift = shiftIndex - 2;
+        // グラフの大きさに対する倍率。幅と高さを別々に選べる。
+        int shiftX = std::clamp(node->resolutionShiftX, -2, 2) + 2;
+        if (ui::PropertyCombo(ui::Tr("幅", "Width"), &shiftX, items.data(), static_cast<int>(items.size()), 2,
+                              ui::Tr("このノードだけ幅の解像度を変える。重いノードを軽くしたいときに下げる。",
+                                     "Overrides the width of this node only. Lower it to make a heavy node cheaper."))) {
+            node->resolutionShiftX = shiftX - 2;
+        }
+        int shiftY = std::clamp(node->resolutionShiftY, -2, 2) + 2;
+        if (ui::PropertyCombo(ui::Tr("高さ", "Height"), &shiftY, items.data(), static_cast<int>(items.size()), 2,
+                              ui::Tr("このノードだけ高さの解像度を変える。", "Overrides the height of this node only."))) {
+            node->resolutionShiftY = shiftY - 2;
         }
         ui::EndPropertyTable();
     }
@@ -237,12 +243,24 @@ void Application::DrawGraphSettingsPanel() {
         if (ui::PropertyTextInput(ui::Tr("名前", "Name"), name, sizeof(name))) m_graph.name = name;
 
         static const char* const kResolutions[] = {"256", "512", "1024", "2048", "4096"};
-        int index = 0;
-        for (uint32_t r = graph::kMinResolution; r < graph::ClampResolution(m_graph.resolution); r *= 2) ++index;
-        if (ui::PropertyCombo(ui::Tr("解像度", "Resolution"), &index, kResolutions, 5, 2,
-                              ui::Tr("出力の一辺のピクセル数。パラメータは UV 単位なので、変えても見た目は変わらない。",
-                                     "Output size in pixels. Parameters are in UV units, so the look stays the same."))) {
-            m_graph.resolution = graph::kMinResolution << index;
+        const auto sizeIndex = [](uint32_t value) {
+            int index = 0;
+            for (uint32_t r = graph::kMinResolution; r < graph::ClampResolution(value); r *= 2) ++index;
+            return index;
+        };
+        int widthIndex = sizeIndex(m_graph.width);
+        if (ui::PropertyCombo(ui::Tr("幅", "Width"), &widthIndex, kResolutions, 5, 2,
+                              ui::Tr("出力の幅（ピクセル）。高さと違う値にすると、1024×256 のような横長・縦長の出力になる。"
+                                     "模様は短い辺を基準に作るので、長い辺には同じ大きさのマスが多く並ぶ。",
+                                     "Output width in pixels. A value different from the height gives a non-square output such as 1024x256. "
+                                     "Patterns are sized by the short side, so the long side gets more cells of the same size."))) {
+            m_graph.width = graph::kMinResolution << widthIndex;
+        }
+        int heightIndex = sizeIndex(m_graph.height);
+        if (ui::PropertyCombo(ui::Tr("高さ", "Height"), &heightIndex, kResolutions, 5, 2,
+                              ui::Tr("出力の高さ（ピクセル）。パラメータは解像度に依存しないので、縦横比を保って変えれば見た目は変わらない。",
+                                     "Output height in pixels. Parameters are resolution independent, so the look stays the same as long as the aspect is kept."))) {
+            m_graph.height = graph::kMinResolution << heightIndex;
         }
         int seed = static_cast<int>(m_graph.seed % 100000u);
         if (ui::PropertyInt(ui::Tr("シード", "Seed"), &seed, 0, 99999, 0,
@@ -312,9 +330,9 @@ void Application::DrawView2dPanel() {
     ImGui::AlignTextToFramePadding();
     if (node != nullptr) {
         ImGui::Text("%s  #%llu", node->def->label.Get(), static_cast<unsigned long long>(node->id));
-        if (result != nullptr && result->resolution != 0) {
+        if (result != nullptr && result->width != 0) {
             ImGui::SameLine();
-            ImGui::TextDisabled("%u px", result->resolution);
+            ImGui::TextDisabled("%u × %u", result->width, result->height);
         }
     } else {
         ImGui::TextDisabled("%s", ui::Tr("出力ピンをクリック（またはノードをダブルクリック）すると、その出力が出ます。",
@@ -392,16 +410,19 @@ void Application::DrawView2dPanel() {
                 m_device.GetDevice()->CreateShaderResourceView(output.texture.texture.resource.Get(), &srv, channelView.cpu);
                 texture = static_cast<ImTextureID>(channelView.gpu.ptr);
             }
-            const float size = baseSize * m_viewZoom * (m_viewTile ? (1.0f / 3.0f) : 1.0f);
+            // 正方形でない出力は、長い辺を領域に合わせて縦横比を保つ。
+            const float aspect = static_cast<float>(output.texture.texture.width) / static_cast<float>(std::max(1u, output.texture.texture.height));
+            const float scale = baseSize * m_viewZoom * (m_viewTile ? (1.0f / 3.0f) : 1.0f);
+            const ImVec2 size = {scale * std::min(1.0f, aspect), scale * std::min(1.0f, 1.0f / aspect)};
             const int tiles = m_viewTile ? 3 : 1;
-            const ImVec2 origin = {center.x + m_viewPan.x - size * tiles * 0.5f, center.y + m_viewPan.y - size * tiles * 0.5f};
+            const ImVec2 origin = {center.x + m_viewPan.x - size.x * tiles * 0.5f, center.y + m_viewPan.y - size.y * tiles * 0.5f};
             for (int y = 0; y < tiles; ++y) {
                 for (int x = 0; x < tiles; ++x) {
-                    const ImVec2 min = {origin.x + size * x, origin.y + size * y};
-                    drawList->AddImage(texture, min, {min.x + size, min.y + size});
+                    const ImVec2 min = {origin.x + size.x * x, origin.y + size.y * y};
+                    drawList->AddImage(texture, min, {min.x + size.x, min.y + size.y});
                 }
             }
-            drawList->AddRect(origin, {origin.x + size * tiles, origin.y + size * tiles}, ImGui::GetColorU32(ImGuiCol_Border));
+            drawList->AddRect(origin, {origin.x + size.x * tiles, origin.y + size.y * tiles}, ImGui::GetColorU32(ImGuiCol_Border));
         } else if (result != nullptr && !result->error.empty()) {
             drawList->AddText({areaMin.x + pad, areaMin.y + pad}, ui::ErrorColor(),
                               ui::Tr("このノードはエラーで評価できません。", "This node failed to evaluate."));

@@ -1,7 +1,7 @@
 # file-format — グラフのファイル形式（.sgraph）
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-23 03:59
 
 グラフは JSON で保存する。拡張子は `.sgraph`、文字コードは UTF-8。
 読み書きは `src/io/GraphJson.cpp`。
@@ -39,14 +39,16 @@
 | `format` | 文字列 | 必ず `"surface-graph"`。違えば読み込まない |
 | `version` | 整数 | 形式の版（いまは 1）。読む側より新しければ読み込まない |
 | `name` | 文字列 | グラフの名前 |
-| `resolution` | 整数 | 出力の一辺。256〜4096 の 2 のべきへ丸める |
+| `resolution` | 整数 | 出力の一辺（正方形のとき）。256〜4096 の 2 のべきへ丸める |
+| `width` / `height` | 整数 | 出力の幅と高さ（正方形でないとき。`resolution` の代わりに書く）。それぞれ 256〜4096 の 2 のべき |
 | `seed` | 整数 | グローバルシード |
 | `nodes[].id` | 整数 | ノードの ID（1 以上、グラフ内で一意。リンクの ID と同じ連番から取る） |
 | `nodes[].type` | 文字列 | ノードの種類（[docs/nodes/README.md](../nodes/README.md)） |
 | `nodes[].pos` | [x, y] | エディタ上の位置 |
 | `nodes[].params` | オブジェクト | パラメータ名 → 値。無いものは既定値 |
 | `nodes[].seedOffset` | 整数 | ノードのシード。0 なら省く |
-| `nodes[].resolutionShift` | 整数 | グラフの解像度に対する 2 のべきの差（-4〜4）。0 なら省く |
+| `nodes[].resolutionShift` | 整数 | グラフの解像度に対する 2 のべきの差（-4〜4）。幅と高さに同じ値を使う。0 なら省く |
+| `nodes[].resolutionShiftX` / `resolutionShiftY` | 整数 | 幅と高さで倍率が違うとき、`resolutionShift` の代わりに書く |
 | `links[]` | オブジェクト | `from` の出力ピン `fromPin` から、`to` の入力ピン `toPin` へ。ピンは名前で書く |
 | `exposedParams[]` | オブジェクト | グラフ入力として公開したパラメータ。並び順が UI の並び順 |
 

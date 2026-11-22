@@ -1,10 +1,10 @@
-// 周期付きのノイズ。周期（格子の数）は整数で渡す。
+// 周期付きのノイズ。周期（格子の数）は軸ごとの整数で渡す（正方形でない出力では縦横で違う）。
 #ifndef SG_NOISE_HLSLI
 #define SG_NOISE_HLSLI
 
 #include "sg_common.hlsli"
 
-float2 sg_gradient(int2 cell, int period, uint seed) {
+float2 sg_gradient(int2 cell, int2 period, uint seed) {
     const float angle = sg_cell_hash(cell, period, seed).x * SG_TAU;
     float s, c;
     sincos(angle, s, c);
@@ -12,7 +12,7 @@ float2 sg_gradient(int2 cell, int period, uint seed) {
 }
 
 // 勾配ノイズ。p は格子単位（UV × period）。おおよそ -0.7〜0.7。
-float sg_perlin(float2 p, int period, uint seed) {
+float sg_perlin(float2 p, int2 period, uint seed) {
     const float2 cellF = floor(p);
     const int2 cell = int2(cellF);
     const float2 f = p - cellF;
@@ -25,7 +25,7 @@ float sg_perlin(float2 p, int period, uint seed) {
 }
 
 // 値ノイズ。0〜1。
-float sg_value_noise(float2 p, int period, uint seed) {
+float sg_value_noise(float2 p, int2 period, uint seed) {
     const float2 cellF = floor(p);
     const int2 cell = int2(cellF);
     const float2 f = p - cellF;
@@ -43,7 +43,7 @@ struct SgWorley {
     float random;  // 最も近いセルの乱数（0〜1）
 };
 
-SgWorley sg_worley(float2 p, int period, float jitter, uint seed) {
+SgWorley sg_worley(float2 p, int2 period, float jitter, uint seed) {
     const float2 cellF = floor(p);
     const int2 cell = int2(cellF);
     const float2 f = p - cellF;

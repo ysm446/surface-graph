@@ -4,10 +4,10 @@
 // params: float distance; float threshold
 #include "sg_common.hlsli"
 
-// タイルを跨いだ最短の差（-0.5〜0.5）。
+// タイルを跨いだ最短の差。UV で折り返してから、距離の単位（短い辺を 1）に直す。
 float2 WrappedDelta(float2 a, float2 b) {
     float2 d = a - b;
-    return d - round(d);
+    return (d - round(d)) * sg_aspect();
 }
 
 [numthreads(8, 8, 1)]
@@ -24,7 +24,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         sg_write_gray(id.xy, saturate(1.0 - d / max(distance, 1e-5)));
         return;
     }
-    const int stride = max(int(sgResolution >> sgPass), 1);
+    const int stride = max(int(max(sgWidth, sgHeight) >> sgPass), 1);
     float4 best = float4(0.0, 0.0, 0.0, 0.0);
     float bestDistance = 1e9;
     for (int y = -1; y <= 1; ++y) {

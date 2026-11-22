@@ -4,7 +4,7 @@
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    const int period = max(scale, 1);
-    const int2 cell = int2(floor(sg_uv(id.xy) * float(period)));
-    sg_write_gray(id.xy, sg_cell_hash(cell, int2(period, period), sgSeed).x);
+    const int2 period = max(scale, 1) * sg_aspect_i();
+    const int2 cell = int2(floor(sg_uv(id.xy) * float2(period)));
+    sg_write_gray(id.xy, sg_cell_hash(cell, period, sgSeed).x);
 }

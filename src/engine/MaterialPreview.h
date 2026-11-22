@@ -23,7 +23,7 @@ struct PreviewSettings {
     // パン。カメラの右 / 上の向きへ、注視点とカメラを一緒にずらす量（ワールドの長さ）。
     float panX = 0.0f;
     float panY = 0.0f;
-    float tiling = 2.0f;
+    float tiling = 1.0f;
     float exposure = 1.0f;
     float lightYaw = 0.9f;
     float lightPitch = 0.75f;

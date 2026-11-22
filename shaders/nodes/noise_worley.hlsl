@@ -4,8 +4,8 @@
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    const int period = max(scale, 1);
-    const SgWorley w = sg_worley(sg_uv(id.xy) * float(period), period, jitter, sgSeed);
+    const int2 period = max(scale, 1) * sg_aspect_i();
+    const SgWorley w = sg_worley(sg_uv(id.xy) * float2(period), period, jitter, sgSeed);
     float value = w.f1;
     if (mode == 1) value = w.f2;
     else if (mode == 2) value = w.f2 - w.f1;

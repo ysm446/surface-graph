@@ -1,7 +1,7 @@
 # cli — surfgraph-cli の使い方
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-23 03:59
 
 `surfgraph-cli` は、UI なしでグラフを評価するヘッドレス CLI。評価エンジンはエディタと同じもの。
 ビルドすると `build/bin/<構成>/surfgraph-cli.exe` にできる。シェーダはソースツリーの `shaders/` を直接読む。
@@ -9,14 +9,16 @@
 ## render — 全ノードを PNG に書き出す
 
 ```
-surfgraph-cli render <graph> --out <dir> [--res N] [--seed S]
+surfgraph-cli render <graph> --out <dir> [--res N] [--width W --height H] [--seed S]
 ```
 
 - `<dir>/<nodeId>_<type>.png` を全ノード分書く（`type` の `.` は `_` に置き換える）。
   出力が複数あるノードは `<nodeId>_<type>_<出力名>.png`。
 - `<dir>/contact_sheet.png` に一覧を書く。並びはグラフのノードの順（左上から右へ）。
 - Gray は 1 チャンネル、Color は RGB の 8bit PNG。値は 0〜1 に切り詰める。
-- `--res` を省くとグラフの解像度。`--seed` はグラフのシードを上書きする。
+- `--res` は**短い辺**のピクセル数（長い辺はグラフの縦横比から決まる）。省くとグラフの解像度。
+- `--width` / `--height` はグラフの大きさを上書きする（正方形でない出力の確認用。`check` / `golden` でも使える）。
+- `--seed` はグラフのシードを上書きする。
 - ノードにエラー（シェーダのコンパイル失敗など）があれば、メッセージを出して終了コード 1。
 
 ## check — 性質を数値で確かめる

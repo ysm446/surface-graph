@@ -224,9 +224,14 @@ Thumbnail ThumbnailButton(const char* id, ImTextureID texture, float size, bool 
     return state;
 }
 
-void ThumbnailImage(ImTextureID texture, float size) {
-    const ImVec2 min = ImGui::GetCursorScreenPos();
-    const ImVec2 max(min.x + size, min.y + size);
+void ThumbnailImage(ImTextureID texture, float size, float aspect) {
+    const ImVec2 frameMin = ImGui::GetCursorScreenPos();
+    // 枠は常に正方形。絵は長い辺を枠に合わせ、短い辺を中央に寄せる。
+    const float safeAspect = (aspect > 0.0f) ? aspect : 1.0f;
+    const float width = size * ((safeAspect >= 1.0f) ? 1.0f : safeAspect);
+    const float height = size * ((safeAspect >= 1.0f) ? 1.0f / safeAspect : 1.0f);
+    const ImVec2 min(frameMin.x + (size - width) * 0.5f, frameMin.y + (size - height) * 0.5f);
+    const ImVec2 max(min.x + width, min.y + height);
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const float rounding = ImGui::GetStyle().FrameRounding;

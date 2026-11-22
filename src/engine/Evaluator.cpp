@@ -27,14 +27,14 @@ constexpr size_t kMaxPooled = 24;
 struct NodeConstants {
     uint32_t outputs[4];
     uint32_t inputs[graph::kMaxNodeInputs];
-    uint32_t resolution;
+    uint32_t width;
     uint32_t seed;
     uint32_t connected;
     uint32_t colorMask;
     uint32_t pass;
     uint32_t passCount;
     uint32_t prevIndex;
-    uint32_t reserved;
+    uint32_t height;
 };
 static_assert(sizeof(NodeConstants) == sizeof(uint32_t) * rhi::kRootConstantCount);
 
@@ -61,14 +61,6 @@ uint32_t MixSeed(uint32_t globalSeed, int seedOffset) {
     h *= 0x85EBCA6Bu;
     h ^= h >> 13;
     return h;
-}
-
-uint32_t NodeResolution(const graph::Node& node, uint32_t resolution) {
-    int shift = std::clamp(node.resolutionShift, -4, 4);
-    uint32_t result = resolution;
-    for (; shift > 0; --shift) result *= 2;
-    for (; shift < 0; ++shift) result /= 2;
-    return std::clamp(result, 16u, graph::kMaxResolution);
 }
 
 uint64_t BytesOf(const rhi::GpuTexture& texture) {
@@ -133,9 +125,10 @@ const Evaluator::DefCache& Evaluator::CacheFor(const graph::NodeDef& def) {
     return m_defCache.emplace(&def, std::move(cache)).first->second;
 }
 
-PooledTexture Evaluator::Acquire(uint32_t resolution, DXGI_FORMAT format) {
+PooledTexture Evaluator::Acquire(graph::TextureSize size, DXGI_FORMAT format) {
     for (size_t i = 0; i < m_pool.size(); ++i) {
-        if (m_pool[i].texture.width == resolution && m_pool[i].texture.format == format) {
+        if (m_pool[i].texture.width == size.width && m_pool[i].texture.height == size.height &&
+            m_pool[i].texture.format == format) {
             PooledTexture result = std::move(m_pool[i]);
             m_pool.erase(m_pool.begin() + static_cast<ptrdiff_t>(i));
             return result;
@@ -144,13 +137,14 @@ PooledTexture Evaluator::Acquire(uint32_t resolution, DXGI_FORMAT format) {
 
     PooledTexture result;
     rhi::TextureDesc desc;
-    desc.width = resolution;
-    desc.height = resolution;
+    desc.width = size.width;
+    desc.height = size.height;
     desc.format = format;
     desc.allowUnorderedAccess = true;
     desc.debugName = (format == kGrayFormat) ? L"NodeGray" : L"NodeColor";
     if (!m_device->Allocator().CreateTexture2D(desc, result.texture)) {
-        SG_LOG_ERROR(ui::Tr("ノードのテクスチャを確保できません (%u px)", "Could not allocate a node texture (%u px)"), resolution);
+        SG_LOG_ERROR(ui::Tr("ノードのテクスチャを確保できません (%u px)", "Could not allocate a node texture (%u px)"),
+                     std::max(size.width, size.height));
         return {};
     }
     m_textureBytes += BytesOf(result.texture);
@@ -195,9 +189,7 @@ bool Evaluator::Evaluate(ID3D12GraphicsCommandList* commandList, const EvaluateR
     m_lastEvaluated = 0;
     if (commandList == nullptr || request.graph == nullptr || m_device == nullptr) return true;
     const graph::Graph& graph = *request.graph;
-    const uint32_t resolution =
-        (request.resolution != 0) ? std::clamp(request.resolution, 16u, graph::kMaxResolution)
-                                  : graph::ClampResolution(graph.resolution);
+    const graph::TextureSize baseSize = graph::EvaluationSize(graph, request.resolution);
 
     // グラフから消えたノードの結果をプールへ返す。
     for (auto it = m_results.begin(); it != m_results.end();) {
@@ -230,12 +222,13 @@ bool Evaluator::Evaluate(ID3D12GraphicsCommandList* commandList, const EvaluateR
     for (const uint64_t id : order) {
         const graph::Node& node = *graph.FindNode(id);
         const graph::NodeDef& def = *node.def;
-        const uint32_t nodeResolution = NodeResolution(node, resolution);
+        const graph::TextureSize nodeSize = graph::NodeSize(node, baseSize);
 
         Hasher hasher;
         hasher.Bytes(def.type, std::strlen(def.type));
         hasher.Add(m_generation);
-        hasher.Add(nodeResolution);
+        hasher.Add(nodeSize.width);
+        hasher.Add(nodeSize.height);
         if (def.usesSeed) hasher.Add(MixSeed(graph.seed, node.seedOffset));
         for (size_t i = 0; i < def.params.size() && i < node.params.size(); ++i) {
             const graph::ParamValue& value = node.params[i];
@@ -265,7 +258,7 @@ bool Evaluator::Evaluate(ID3D12GraphicsCommandList* commandList, const EvaluateR
             complete = false;
             break;
         }
-        EvaluateNode(commandList, graph, node, nodeResolution, hasher.value, cost);
+        EvaluateNode(commandList, graph, node, nodeSize, hasher.value, cost);
         ++m_lastEvaluated;
     }
 
@@ -274,13 +267,14 @@ bool Evaluator::Evaluate(ID3D12GraphicsCommandList* commandList, const EvaluateR
 }
 
 bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph::Graph& graph,
-                             const graph::Node& node, uint32_t resolution, uint64_t hash, float& cost) {
+                             const graph::Node& node, graph::TextureSize size, uint64_t hash, float& cost) {
     const graph::NodeDef& def = *node.def;
     NodeResult& result = m_results[node.id];
     result.hash = hash;
     result.valid = true;
     result.error.clear();
-    result.resolution = resolution;
+    result.width = size.width;
+    result.height = size.height;
 
     // 出力テクスチャ。大きさか型が変わったものだけ取り替える。
     const size_t outputCount = std::min<size_t>(def.outputs.size(), graph::kMaxNodeOutputs);
@@ -290,10 +284,10 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
         NodeOutput& output = result.outputs[i];
         output.type = graph.ResolveOutputType(node.id, static_cast<int>(i));
         const DXGI_FORMAT format = (output.type == graph::PinType::Color) ? kColorFormat : kGrayFormat;
-        if (!output.texture.IsValid() || output.texture.texture.width != resolution ||
-            output.texture.texture.format != format) {
+        if (!output.texture.IsValid() || output.texture.texture.width != size.width ||
+            output.texture.texture.height != size.height || output.texture.texture.format != format) {
             Release(output.texture);
-            output.texture = Acquire(resolution, format);
+            output.texture = Acquire(size, format);
         }
         if (!output.texture.IsValid()) {
             result.error = ui::Tr("テクスチャを確保できません", "Could not allocate the texture");
@@ -312,7 +306,8 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
     }
 
     NodeConstants constants = {};
-    constants.resolution = resolution;
+    constants.width = size.width;
+    constants.height = size.height;
     constants.seed = MixSeed(graph.seed, node.seedOffset);
     for (uint32_t i = 0; i < graph::kMaxNodeInputs; ++i) constants.inputs[i] = m_black.SrvIndex();
 
@@ -346,11 +341,11 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
     }
     graph::PackParams(def, defCache.layout, params, static_cast<uint8_t*>(paramBuffer.cpu));
 
-    const uint32_t passCount = (def.passCount != nullptr) ? std::max(1u, def.passCount(node, resolution)) : 1u;
+    const uint32_t passCount = (def.passCount != nullptr) ? std::max(1u, def.passCount(node, std::max(size.width, size.height))) : 1u;
     PooledTexture temps[2];
     if (passCount > 1) {
-        temps[0] = Acquire(resolution, kColorFormat);
-        if (passCount > 2) temps[1] = Acquire(resolution, kColorFormat);
+        temps[0] = Acquire(size, kColorFormat);
+        if (passCount > 2) temps[1] = Acquire(size, kColorFormat);
         if (!temps[0].IsValid() || (passCount > 2 && !temps[1].IsValid())) {
             Release(temps[0]);
             Release(temps[1]);
@@ -363,7 +358,8 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
     commandList->SetPipelineState(pipeline);
     commandList->SetComputeRootConstantBufferView(1, paramBuffer.gpuAddress);
     constants.passCount = passCount;
-    const uint32_t groups = rhi::DispatchCount(resolution);
+    const uint32_t groupsX = rhi::DispatchCount(size.width);
+    const uint32_t groupsY = rhi::DispatchCount(size.height);
 
     for (uint32_t pass = 0; pass < passCount; ++pass) {
         const bool last = (pass + 1 == passCount);
@@ -384,7 +380,7 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
             constants.outputs[0] = target.texture.UavIndex();
         }
         commandList->SetComputeRoot32BitConstants(0, rhi::kRootConstantCount, &constants, 0);
-        commandList->Dispatch(groups, groups, 1);
+        commandList->Dispatch(groupsX, groupsY, 1);
     }
 
     for (size_t i = 0; i < outputCount; ++i) {
@@ -394,7 +390,7 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
 
     Release(temps[0]);
     Release(temps[1]);
-    cost += static_cast<float>(resolution) * static_cast<float>(resolution) * static_cast<float>(passCount) / 1.0e6f;
+    cost += static_cast<float>(size.width) * static_cast<float>(size.height) * static_cast<float>(passCount) / 1.0e6f;
     return true;
 }
 

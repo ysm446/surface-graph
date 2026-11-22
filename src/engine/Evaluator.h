@@ -33,7 +33,9 @@ struct NodeResult {
     // このノードの内容を表すハッシュ（種類・パラメータ・シード・解像度・上流のハッシュ）。
     // 前回と同じなら再計算しない。これが dirty の伝播を兼ねる。
     uint64_t hash = 0;
-    uint32_t resolution = 0;
+    // 出力の大きさ（ピクセル）。
+    uint32_t width = 0;
+    uint32_t height = 0;
     std::vector<NodeOutput> outputs;
     // シェーダのコンパイルエラーなど。空なら成功。
     std::string error;
@@ -44,8 +46,8 @@ struct EvaluateRequest {
     const graph::Graph* graph = nullptr;
     // ここから上流へ辿ったノードだけを評価する。空なら全ノード。
     std::vector<uint64_t> targets;
-    // 評価する解像度。0 ならグラフの解像度。スライダー操作中の低解像度プレビューや、
-    // エクスポート時の別解像度での再評価に使う。
+    // 評価する解像度（**短い辺**のピクセル数。長い辺はグラフの縦横比から決まる）。0 ならグラフの解像度。
+    // スライダー操作中の低解像度プレビューや、エクスポート時の別解像度での再評価に使う。
     uint32_t resolution = 0;
     // 1 回の呼び出しで使ってよい量（メガピクセル × パス数）。0 なら無制限。
     // 超えたら残りは次の呼び出しへ持ち越す（UI を止めないため）。
@@ -85,11 +87,11 @@ private:
     };
 
     const DefCache& CacheFor(const graph::NodeDef& def);
-    PooledTexture Acquire(uint32_t resolution, DXGI_FORMAT format);
+    PooledTexture Acquire(graph::TextureSize size, DXGI_FORMAT format);
     void Release(PooledTexture& texture);
     void ReleaseResult(NodeResult& result);
     bool EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph::Graph& graph,
-                      const graph::Node& node, uint32_t resolution, uint64_t hash, float& cost);
+                      const graph::Node& node, graph::TextureSize size, uint64_t hash, float& cost);
 
     rhi::Device* m_device = nullptr;
     rhi::PipelineCache* m_pipelines = nullptr;

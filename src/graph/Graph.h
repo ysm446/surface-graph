@@ -101,8 +101,9 @@ struct Node {
     float pos[2] = {0.0f, 0.0f};
     std::vector<ParamValue> params;  // def->params と同じ並び
     int seedOffset = 0;
-    // グラフの解像度に対する 2 のべきの差（-2 なら 1/4）。0 で継承。
-    int resolutionShift = 0;
+    // グラフの解像度に対する 2 のべきの差（-2 なら 1/4）。0 で継承。幅と高さを別々に持つ。
+    int resolutionShiftX = 0;
+    int resolutionShiftY = 0;
 
     bool operator==(const Node&) const = default;
 };
@@ -128,7 +129,9 @@ struct ExposedParam {
 
 struct Graph {
     std::string name = "untitled";
-    uint32_t resolution = 1024;  // 2 のべき（256〜4096）
+    // 出力の大きさ。幅も高さも 2 のべき（256〜4096）。正方形でなくてよい（1024×256 など）。
+    uint32_t width = 1024;
+    uint32_t height = 1024;
     uint32_t seed = 0;
     std::vector<Node> nodes;
     std::vector<Link> links;
@@ -168,6 +171,20 @@ inline constexpr uint32_t kMinResolution = 256;
 inline constexpr uint32_t kMaxResolution = 4096;
 // 256〜4096 の 2 のべきへ丸める。
 uint32_t ClampResolution(uint32_t resolution);
+
+struct TextureSize {
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    bool operator==(const TextureSize&) const = default;
+};
+// グラフの出力の大きさ（丸めたもの）。
+TextureSize GraphSize(const Graph& graph);
+// 評価する大きさ。shortSide が 0 でなければ、縦横比を保ったまま短い辺をその値にする
+// （スライダー操作中の低解像度プレビュー、CLI の --res）。
+TextureSize EvaluationSize(const Graph& graph, uint32_t shortSide);
+// ノードごとの倍率を掛けた大きさ（各辺 16〜4096）。base は EvaluationSize の結果。
+TextureSize NodeSize(const Node& node, TextureSize base);
 
 // --- パラメータの定数バッファ ------------------------------------------------
 // ノード定義から HLSL の宣言と CPU 側の詰め方を作る。HLSL の cbuffer の詰め規則

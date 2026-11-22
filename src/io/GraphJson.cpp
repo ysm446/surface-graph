@@ -105,7 +105,13 @@ Json NodeToJson(const graph::Node& node) {
     }
     Json json = {{"id", node.id}, {"type", node.def->type}, {"pos", Json::array({node.pos[0], node.pos[1]})}, {"params", params}};
     if (node.seedOffset != 0) json["seedOffset"] = node.seedOffset;
-    if (node.resolutionShift != 0) json["resolutionShift"] = node.resolutionShift;
+    // 縦横が同じなら、これまでと同じ 1 つの値で書く（古い版でも読める）。
+    if (node.resolutionShiftX == node.resolutionShiftY) {
+        if (node.resolutionShiftX != 0) json["resolutionShift"] = node.resolutionShiftX;
+    } else {
+        json["resolutionShiftX"] = node.resolutionShiftX;
+        json["resolutionShiftY"] = node.resolutionShiftY;
+    }
     return json;
 }
 
@@ -121,7 +127,9 @@ bool NodeFromJson(const Json& json, graph::Node& node, std::string& unknownType)
     node.id = IdOr(json, "id", 0);
     if (const auto pos = json.find("pos"); pos != json.end()) ReadFloats(*pos, node.pos, 2);
     node.seedOffset = IntOr(json, "seedOffset", 0);
-    node.resolutionShift = std::clamp(IntOr(json, "resolutionShift", 0), -4, 4);
+    const int shift = IntOr(json, "resolutionShift", 0);
+    node.resolutionShiftX = std::clamp(IntOr(json, "resolutionShiftX", shift), -4, 4);
+    node.resolutionShiftY = std::clamp(IntOr(json, "resolutionShiftY", shift), -4, 4);
     node.params.clear();
     const auto params = json.find("params");
     for (const graph::ParamDef& def : node.def->params) {
@@ -158,9 +166,18 @@ std::string GraphToJson(const graph::Graph& graph) {
         if (node == nullptr || item.param < 0 || item.param >= static_cast<int>(node->def->params.size())) continue;
         exposed.push_back({{"name", item.name}, {"node", item.node}, {"param", node->def->params[item.param].name}});
     }
-    const Json root = {{"format", "surface-graph"}, {"version", kGraphFormatVersion}, {"name", graph.name},
-                       {"resolution", graph.resolution}, {"seed", graph.seed},
-                       {"nodes", nodes}, {"links", links}, {"exposedParams", exposed}};
+    Json root = {{"format", "surface-graph"}, {"version", kGraphFormatVersion}, {"name", graph.name}};
+    // 正方形なら、これまでと同じ "resolution" で書く（古い版でも読める）。
+    if (graph.width == graph.height) {
+        root["resolution"] = graph.width;
+    } else {
+        root["width"] = graph.width;
+        root["height"] = graph.height;
+    }
+    root["seed"] = graph.seed;
+    root["nodes"] = nodes;
+    root["links"] = links;
+    root["exposedParams"] = exposed;
     return root.dump(2);
 }
 
@@ -182,7 +199,9 @@ bool GraphFromJson(const std::string& text, graph::Graph& outGraph, std::string&
 
     graph::Graph graph;
     graph.name = StringOr(root, "name", "untitled");
-    graph.resolution = graph::ClampResolution(static_cast<uint32_t>(std::max(0, IntOr(root, "resolution", 1024))));
+    const int resolution = IntOr(root, "resolution", 1024);
+    graph.width = graph::ClampResolution(static_cast<uint32_t>(std::max(0, IntOr(root, "width", resolution))));
+    graph.height = graph::ClampResolution(static_cast<uint32_t>(std::max(0, IntOr(root, "height", resolution))));
     if (const auto seed = root.find("seed"); seed != root.end() && seed->is_number_unsigned()) {
         graph.seed = seed->get<uint32_t>();
     }

@@ -22,7 +22,7 @@ float ShapeDistance(float2 p) {
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
-    const float2 p = sg_rotate((sg_uv(id.xy) - 0.5) * 2.0, rotation);
+    const float2 p = sg_rotate((sg_tile_uv(sg_uv(id.xy)) - 0.5) * 2.0, rotation);
     const float inside = -ShapeDistance(p);
     // ベベルが無いときは 1 ピクセルぶんの傾斜で縁を滑らかにする。
     const float minHalf = min(max(size.x, 1e-4), max(size.y, 1e-4));

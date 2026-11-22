@@ -6,10 +6,11 @@
 void main(uint3 id : SV_DispatchThreadID) {
     const float2 uv = sg_uv(id.xy);
     float sum = 0.0, amplitude = 1.0, total = 0.0;
-    int period = max(scale, 1);
+    // 格子は正方形に保つ（長い辺の分割を縦横比のぶん増やす）。
+    int2 period = max(scale, 1) * sg_aspect_i();
     for (int o = 0; o < octaves; ++o) {
         // 1.41421 を掛けて -1〜1 に広げる。
-        float n = sg_perlin(uv * float(period), period, sgSeed + uint(o) * 7919u) * 1.41421;
+        float n = sg_perlin(uv * float2(period), period, sgSeed + uint(o) * 7919u) * 1.41421;
         if (mode == 1) {
             n = 1.0 - abs(n);
             n *= n;
