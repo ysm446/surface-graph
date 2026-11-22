@@ -11,12 +11,18 @@ namespace sg::engine {
 
 class Evaluator;
 
+// 3D ビューの縦の画角（ラジアン。約 34°）。UI がパンの量を画面の動きに合わせるのにも使う。
+inline constexpr float kPreviewFovY = 0.6f;
+
 // 3D ビューの設定。角度はラジアン。
 struct PreviewSettings {
     int shape = 0;  // 0 球 / 1 平面
     float yaw = 0.6f;
     float pitch = 0.35f;
     float distance = 3.2f;
+    // パン。カメラの右 / 上の向きへ、注視点とカメラを一緒にずらす量（ワールドの長さ）。
+    float panX = 0.0f;
+    float panY = 0.0f;
     float tiling = 2.0f;
     float exposure = 1.0f;
     float lightYaw = 0.9f;

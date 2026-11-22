@@ -15,7 +15,7 @@ namespace {
 
 constexpr D3D12_RESOURCE_STATES kReadState =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-constexpr float kFovY = 0.6f;  // ラジアン（約 34°）
+constexpr float kFovY = kPreviewFovY;
 
 // b0 のルート定数。shaders/preview/material_preview.hlsl の PreviewConstants と並びを合わせること。
 struct PreviewConstants {
@@ -126,14 +126,18 @@ void MaterialPreview::Render(ID3D12GraphicsCommandList* commandList, const graph
         }
     }
 
-    // カメラは原点のまわりを回る。
+    // カメラは原点のまわりを回り、パンのぶんだけ平行にずれる。
     const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
     const Vec3 offset = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};
     const float distance = std::clamp(settings.distance, 1.2f, 20.0f);
-    const Vec3 position = {offset.x * distance, offset.y * distance, offset.z * distance};
+    const Vec3 orbit = {offset.x * distance, offset.y * distance, offset.z * distance};
     const Vec3 forward = Normalize({-offset.x, -offset.y, -offset.z});
     const Vec3 right = Normalize(Cross(forward, {0.0f, 1.0f, 0.0f}));
     const Vec3 up = Cross(right, forward);
+    // パン: 注視点ごと、画面の右 / 上へ平行にずらす。
+    const Vec3 position = {orbit.x + right.x * settings.panX + up.x * settings.panY,
+                           orbit.y + right.y * settings.panX + up.y * settings.panY,
+                           orbit.z + right.z * settings.panX + up.z * settings.panY};
     const float lightPitch = std::clamp(settings.lightPitch, 0.05f, 1.5f);
     const Vec3 light = Normalize({std::cos(lightPitch) * std::sin(settings.lightYaw), std::sin(lightPitch),
                                   std::cos(lightPitch) * std::cos(settings.lightYaw)});

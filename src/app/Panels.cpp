@@ -443,6 +443,8 @@ void Application::DrawView3dPanel() {
         settings.yaw = defaults.yaw;
         settings.pitch = defaults.pitch;
         settings.distance = defaults.distance;
+        settings.panX = 0.0f;
+        settings.panY = 0.0f;
     }
     if (m_graph.FindMaterialNode() == nullptr) {
         ImGui::SameLine();
@@ -487,7 +489,12 @@ void Application::DrawView3dPanel() {
         ImGui::SetCursorScreenPos(areaMin);
         ImGui::InvisibleButton("##view3dCanvas", areaSize, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
         const ImGuiIO& io = ImGui::GetIO();
-        if (ImGui::IsItemActive() && (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle))) {
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+            // 中ボタンドラッグでパン。掴んだ場所がマウスに付いてくる量（注視点の距離での 1 ピクセルの長さ）。
+            const float unitsPerPixel = 2.0f * settings.distance * std::tan(engine::kPreviewFovY * 0.5f) / areaSize.y;
+            settings.panX = std::clamp(settings.panX - io.MouseDelta.x * unitsPerPixel, -10.0f, 10.0f);
+            settings.panY = std::clamp(settings.panY + io.MouseDelta.y * unitsPerPixel, -10.0f, 10.0f);
+        } else if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             if (io.KeyShift) {
                 // Shift + ドラッグでライトを回す。
                 settings.lightYaw += io.MouseDelta.x * 0.01f;

@@ -42,6 +42,8 @@ sg::StartupOptions ParseCommandLine() {
         } else if (argument == L"--language" && i + 1 < argc) {
             const std::wstring language = argv[++i];
             if (language == L"ja" || language == L"en") options.language = (language == L"en") ? "en" : "ja";
+        } else if (argument == L"--ui-scale" && i + 1 < argc) {
+            options.uiScale = std::clamp(static_cast<float>(::_wtof(argv[++i])), 0.5f, 3.0f);
         } else if (argument == L"--preview-shape" && i + 1 < argc) {
             options.previewShape = (std::wstring(argv[++i]) == L"plane") ? 1 : 0;
         } else if (argument == L"--gpu-validation") {

@@ -9,7 +9,10 @@
 #include <imgui_internal.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <string>
 
 namespace sg {
 
@@ -20,6 +23,7 @@ constexpr uint32_t kInitialHeight = 1080;
 constexpr float kClearColor[4] = {0.09f, 0.09f, 0.11f, 1.0f};
 // ステータスバーの Info を出しておく秒数。警告とエラーは次のメッセージまで残す。
 constexpr double kStatusHoldSeconds = 6.0;
+constexpr size_t kMaxRecentFiles = 10;
 constexpr size_t kMaxUndoDepth = 100;
 // 1 フレームに評価してよい量（メガピクセル × パス数）。超えたぶんは次のフレームへ持ち越して UI を止めない。
 constexpr float kFrameBudgetMegapixels = 48.0f;
@@ -91,6 +95,9 @@ bool Application::Initialize(const StartupOptions& options) {
 
     if (options.previewShape >= 0) m_previewSettings.shape = options.previewShape;
 
+    LoadSettings();
+    ApplyUiScale();
+    LoadRecentFiles();
     CreateGraphEditor();
     NewDocument();
     if (!options.graphPath.empty()) OpenDocument(options.graphPath);
@@ -140,6 +147,8 @@ int Application::Run() {
 
         // フレームの外でやる仕事（GPU の待機や、グラフの差し替えを伴うもの）。
         PollShaderHotReload();
+        // UI の拡大率はスタイル・フォントとウィンドウの大きさに効く。フレームの外で。
+        ApplyUiScale();
         RunPendingAction();
         if (m_pendingAction == PendingAction::Close) break;
         if (m_pendingHistoryStep != 0) {
@@ -241,6 +250,7 @@ void Application::DrawMenuBar() {
     if (ImGui::BeginMenu(ui::Tr("ファイル", "File"))) {
         if (ImGui::MenuItem(ui::Tr("新規", "New"), "Ctrl+N")) RequestNew();
         if (ImGui::MenuItem(ui::Tr("開く...", "Open..."), "Ctrl+O")) RequestOpen();
+        DrawRecentMenu();
         ImGui::Separator();
         if (ImGui::MenuItem(ui::Tr("保存", "Save"), "Ctrl+S")) RequestSave(false);
         if (ImGui::MenuItem(ui::Tr("名前を付けて保存...", "Save As..."), "Ctrl+Shift+S")) RequestSave(true);
@@ -257,6 +267,8 @@ void Application::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(ui::Tr("ウィンドウ", "Window"))) {
+        DrawScaleMenu();
+        ImGui::Separator();
         if (ImGui::MenuItem(ui::Tr("レイアウトを初期化", "Reset Layout"))) m_rebuildLayout = true;
         ImGui::EndMenu();
     }
@@ -404,6 +416,17 @@ void Application::RequestOpen() {
     }
 }
 
+void Application::RequestOpenPath(const std::filesystem::path& path) {
+    // 未保存の確認を挟む。確認のあとも m_pendingOpenPath を開く。
+    m_pendingOpenPath = path;
+    if (Modified()) {
+        m_confirmAction = PendingAction::Open;
+        m_openConfirm = true;
+    } else {
+        m_pendingAction = PendingAction::Open;
+    }
+}
+
 void Application::RequestSave(bool saveAs) {
     std::filesystem::path path = m_documentPath;
     if (saveAs || path.empty()) {
@@ -465,6 +488,8 @@ bool Application::OpenDocument(const std::filesystem::path& path) {
     if (!io::LoadGraph(path, loaded, error, &warnings)) {
         SG_LOG_ERROR(ui::Tr("グラフを開けません: %s (%s)", "Could not open the graph: %s (%s)"),
                      ToUtf8Display(path).c_str(), error.c_str());
+        // 消えた / 壊れたファイルは一覧から外す。
+        RemoveRecentFile(path);
         return false;
     }
     for (const std::string& warning : warnings) SG_LOG_WARN("%s", warning.c_str());
@@ -474,6 +499,7 @@ bool Application::OpenDocument(const std::filesystem::path& path) {
     // 最初は Material Output（無ければ最後のノード）を 2D ビューに出す。
     if (const graph::Node* material = m_graph.FindMaterialNode()) m_viewNode = material->id;
     if (m_viewNode == 0 && !m_graph.nodes.empty()) m_viewNode = m_graph.nodes.back().id;
+    AddRecentFile(path);
     SG_LOG_INFO(ui::Tr("グラフを開きました: %s", "Opened the graph: %s"), ToUtf8Display(path).c_str());
     return true;
 }
@@ -486,8 +512,160 @@ bool Application::SaveDocument(const std::filesystem::path& path) {
     m_documentPath = path;
     m_saved = m_graph;
     UpdateWindowTitle();
+    AddRecentFile(path);
     SG_LOG_INFO(ui::Tr("グラフを保存しました: %s", "Saved the graph: %s"), ToUtf8Display(path).c_str());
     return true;
+}
+
+// --- 表示スケール -------------------------------------------------------------
+
+float Application::DesiredUiScale() const {
+    if (m_options.uiScale > 0.0f) return m_options.uiScale;
+    // 開発用のスクリーンショットは、手元の設定によらず 100% で撮る。
+    if (!m_options.uiScreenshotPath.empty()) return 1.0f;
+    return m_followSystemScale ? m_imgui.MonitorScale() : m_manualScale;
+}
+
+// UI を拡大したぶんウィンドウも大きくする（terrain-graph と同じ）。作業面積（論理サイズ）が
+// 1920x1080 のままで、文字と部品だけが大きくなる。
+void Application::ApplyUiScale() {
+    const float desired = DesiredUiScale();
+    if (std::abs(desired - m_imgui.UiScale()) < 0.001f) return;
+    // ドックの分割も同じ比率で広げる。そのままだと、増えたぶんが中央のパネルだけに入る。
+    m_imgui.ScaleLayout(desired / m_imgui.UiScale());
+    m_imgui.SetUiScale(desired);
+    const auto scaled = [this](uint32_t base) {
+        const auto size = static_cast<uint32_t>(std::lround(static_cast<float>(base) * m_imgui.UiScale()));
+        return (size + 1u) & ~1u;
+    };
+    m_window.ResizeClient(scaled(kInitialWidth), scaled(kInitialHeight));
+}
+
+void Application::LoadSettings() {
+    const std::filesystem::path directory = AppDataDirectory();
+    if (directory.empty()) return;
+    std::ifstream file(directory / L"settings.txt", std::ios::binary);
+    std::string line;
+    while (file && std::getline(file, line)) {
+        const size_t split = line.find('=');
+        if (split == std::string::npos) continue;
+        const std::string key = line.substr(0, split);
+        const std::string value = line.substr(split + 1);
+        if (key == "followSystemScale") m_followSystemScale = (std::atoi(value.c_str()) != 0);
+        if (key == "uiScale") m_manualScale = std::clamp(static_cast<float>(std::atof(value.c_str())), 0.5f, 3.0f);
+    }
+}
+
+void Application::SaveSettings() const {
+    const std::filesystem::path directory = AppDataDirectory();
+    if (directory.empty()) return;
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    std::ofstream file(directory / L"settings.txt", std::ios::binary | std::ios::trunc);
+    if (!file) return;
+    file << "followSystemScale=" << (m_followSystemScale ? 1 : 0) << "\n";
+    file << "uiScale=" << m_manualScale << "\n";
+}
+
+// 値を変えるだけ。反映は次のフレームの先頭（ApplyUiScale）。
+void Application::DrawScaleMenu() {
+    if (!ImGui::BeginMenu(ui::Tr("表示スケール", "Display Scale"))) return;
+    char label[96];
+    std::snprintf(label, sizeof(label), ui::Tr("Windows に合わせる (%.0f%%)", "Follow Windows (%.0f%%)"),
+                  m_imgui.MonitorScale() * 100.0f);
+    bool changed = false;
+    if (ImGui::MenuItem(label, nullptr, m_followSystemScale)) {
+        m_followSystemScale = !m_followSystemScale;
+        changed = true;
+    }
+    ImGui::Separator();
+    constexpr float kScales[] = {1.0f, 1.25f, 1.5f, 1.75f, 2.0f};
+    for (const float scale : kScales) {
+        std::snprintf(label, sizeof(label), "%.0f%%", scale * 100.0f);
+        const bool selected = !m_followSystemScale && std::abs(m_manualScale - scale) < 0.01f;
+        if (ImGui::MenuItem(label, nullptr, selected)) {
+            m_followSystemScale = false;
+            m_manualScale = scale;
+            changed = true;
+        }
+    }
+    ImGui::EndMenu();
+    if (changed) SaveSettings();
+}
+
+// --- 最近使ったファイル -------------------------------------------------------
+
+void Application::LoadRecentFiles() {
+    m_recentFiles.clear();
+    const std::filesystem::path directory = AppDataDirectory();
+    if (directory.empty()) return;
+    std::ifstream file(directory / L"recent.txt", std::ios::binary);
+    std::string line;
+    while (file && std::getline(file, line) && m_recentFiles.size() < kMaxRecentFiles) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        m_recentFiles.emplace_back(std::u8string(line.begin(), line.end()));
+    }
+}
+
+void Application::SaveRecentFiles() const {
+    const std::filesystem::path directory = AppDataDirectory();
+    if (directory.empty()) return;
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    std::ofstream file(directory / L"recent.txt", std::ios::binary | std::ios::trunc);
+    if (!file) return;
+    for (const std::filesystem::path& path : m_recentFiles) {
+        const std::u8string text = path.u8string();
+        file.write(reinterpret_cast<const char*>(text.data()), static_cast<std::streamsize>(text.size()));
+        file.put('\n');
+    }
+}
+
+void Application::AddRecentFile(const std::filesystem::path& path) {
+    // スクリーンショット用の起動（開発用）では履歴を汚さない。
+    if (!m_options.uiScreenshotPath.empty()) return;
+    std::error_code error;
+    std::filesystem::path absolute = std::filesystem::absolute(path, error);
+    if (error) absolute = path;
+    absolute = absolute.lexically_normal();
+    std::erase_if(m_recentFiles, [&](const std::filesystem::path& item) {
+        return ::_wcsicmp(item.c_str(), absolute.c_str()) == 0;
+    });
+    m_recentFiles.insert(m_recentFiles.begin(), absolute);
+    if (m_recentFiles.size() > kMaxRecentFiles) m_recentFiles.resize(kMaxRecentFiles);
+    SaveRecentFiles();
+}
+
+void Application::RemoveRecentFile(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::path absolute = std::filesystem::absolute(path, error);
+    if (error) absolute = path;
+    absolute = absolute.lexically_normal();
+    const size_t removed = std::erase_if(m_recentFiles, [&](const std::filesystem::path& item) {
+        return ::_wcsicmp(item.c_str(), absolute.c_str()) == 0;
+    });
+    if (removed > 0) SaveRecentFiles();
+}
+
+// 名前を項目に、置き場所をツールチップに出す。開く要求を積むだけ。
+void Application::DrawRecentMenu() {
+    if (!ImGui::BeginMenu(ui::Tr("最近使ったファイル", "Recent Files"), !m_recentFiles.empty())) return;
+    std::filesystem::path chosen;
+    for (size_t i = 0; i < m_recentFiles.size(); ++i) {
+        const std::filesystem::path& path = m_recentFiles[i];
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::MenuItem(ToUtf8Display(path.filename()).c_str())) chosen = path;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", ToUtf8Display(path).c_str());
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem(ui::Tr("履歴を消す", "Clear History"))) {
+        m_recentFiles.clear();
+        SaveRecentFiles();
+    }
+    ImGui::EndMenu();
+    if (!chosen.empty()) RequestOpenPath(chosen);
 }
 
 void Application::UpdateWindowTitle() {

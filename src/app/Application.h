@@ -31,6 +31,7 @@ struct StartupOptions {
     uint64_t selectNode = 0;                 // --select-node（スクリーンショットの確認用）
     std::string language;                    // --language ja|en
     bool gpuValidation = false;
+    float uiScale = 0.0f;                    // --ui-scale <倍率>（スクリーンショットの確認用。0 で設定に従う）
     int previewShape = -1;                   // --preview-shape sphere|plane（スクリーンショットの確認用）
 };
 
@@ -77,6 +78,7 @@ private:
     enum class PendingAction { None, New, Open, Close };
     void RequestNew();
     void RequestOpen();
+    void RequestOpenPath(const std::filesystem::path& path);
     void RequestSave(bool saveAs);
     void RunPendingAction();
     void NewDocument();
@@ -85,6 +87,23 @@ private:
     void ResetDocumentState();
     void UpdateWindowTitle();
     bool Modified() const { return !(m_graph == m_saved); }
+
+    // --- 表示スケール ---
+    // UI の拡大率。Windows の表示スケールに合わせるか、手で選ぶ。
+    // 設定は %LOCALAPPDATA%/surface-graph/settings.txt に置く（グラフには保存しない）。
+    float DesiredUiScale() const;
+    void ApplyUiScale();
+    void LoadSettings();
+    void SaveSettings() const;
+    void DrawScaleMenu();
+
+    // --- 最近使ったファイル ---
+    // %LOCALAPPDATA%/surface-graph/recent.txt に、新しい順で 1 行 1 パス（UTF-8）。
+    void LoadRecentFiles();
+    void SaveRecentFiles() const;
+    void AddRecentFile(const std::filesystem::path& path);
+    void RemoveRecentFile(const std::filesystem::path& path);
+    void DrawRecentMenu();
 
     // --- アンドゥ ---
     // グラフ全体のスナップショットを積む。スライダーの連続操作は、同じ部品を掴んでいる間 1 手にまとめる。
@@ -119,6 +138,9 @@ private:
     PendingAction m_confirmAction = PendingAction::None;
     bool m_openConfirm = false;
     std::filesystem::path m_pendingOpenPath;
+    std::vector<std::filesystem::path> m_recentFiles;
+    bool m_followSystemScale = false;
+    float m_manualScale = 1.0f;
 
     // 評価。スライダーを掴んでいる間は低解像度で評価し、離したらフル解像度で評価し直す。
     bool m_interactive = false;
