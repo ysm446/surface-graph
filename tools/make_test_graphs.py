@@ -25,7 +25,7 @@ class Graph:
         self.next_id += 1
         row = self.column.get(column, 0)
         self.column[column] = row + 1
-        item = {"id": node_id, "type": type_, "pos": [column * 320, row * 260], "params": params or {}}
+        item = {"id": node_id, "type": type_, "pos": [column * 320, row * 340], "params": params or {}}
         if seed_offset:
             item["seedOffset"] = seed_offset
         self.data["nodes"].append(item)
@@ -99,9 +99,9 @@ def all_nodes():
     normal = g.node("derive.normal", 6, {"intensity": 0.05, "format": 0}, {"In": warp})
     g.node("derive.ao", 6, {"heightScale": 0.1, "radius": 0.05}, {"In": warp})
     g.node("derive.curvature", 6, {"intensity": 1.0, "width": 0.002}, {"In": normal})
-    g.node("io.output", 6, {"usage": 1}, {"In": normal})
-    g.node("io.output", 6, {"usage": 0}, {"In": gradient_map})
-    g.node("io.output", 6, {"usage": 4}, {"In": blur})
+    ao = g.node("derive.ao", 6, {"heightScale": 0.1, "radius": 0.05}, {"In": blur})
+    g.node("io.material", 6, {"normalFormat": 0},
+           {"Albedo": gradient_map, "Normal": normal, "Roughness": levels, "AO": ao, "Displacement": warp})
     g.node("adjust.invert", 6, None, {"In": disc})
     g.node("adjust.invert", 6, None, {"In": polygon})
     g.node("adjust.invert", 6, None, {"In": invert})
@@ -166,12 +166,9 @@ def brick():
                        {"Foreground": wear_smooth, "Background": roughness_base, "Mask": edge_wear})
     metallic = g.node("shape.uniform_color", 6, {"color": [0.0, 0.0, 0.0, 1.0]})
 
-    g.node("io.output", 7, {"usage": 0}, {"In": base_color})
-    g.node("io.output", 7, {"usage": 1}, {"In": normal})
-    g.node("io.output", 7, {"usage": 2}, {"In": roughness})
-    g.node("io.output", 7, {"usage": 3}, {"In": metallic})
-    g.node("io.output", 7, {"usage": 4}, {"In": height})
-    g.node("io.output", 7, {"usage": 5}, {"In": ao})
+    g.node("io.material", 7, {"normalFormat": 0},
+           {"Albedo": base_color, "Normal": normal, "Roughness": roughness, "Metalness": metallic,
+            "AO": ao, "Displacement": height})
     g.save("graphs/brick.sgraph")
 
 

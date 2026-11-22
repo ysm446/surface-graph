@@ -231,12 +231,15 @@ void ThumbnailImage(ImTextureID texture, float size) {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const float rounding = ImGui::GetStyle().FrameRounding;
     if (texture != ImTextureID_Invalid) {
-        drawList->AddImage(texture, min, max, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
-                           IM_COL32_WHITE);
+        // 枠と同じ丸みで切り抜く。四角のまま描くと、角が枠の外へはみ出す。
+        drawList->AddImageRounded(texture, min, max, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                                  IM_COL32_WHITE, rounding);
+    } else {
+        // まだ中身が無いときも場所は空けておく。同じ大きさの面で埋める。
+        drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
     }
-    // まだ中身が無いときも場所は空けておく。行ごとに幅が変わると読みにくい。
-    // 枠は中身の有無に関わらず引く。行に並ぶ箱の大きさを揃えて見せるため。
-    drawList->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_Border), rounding, 0, Scaled(1.0f));
+    // 枠線は引かない。AddRect の線は半ピクセル内側に乗るので、ノードエディタの拡大率と
+    // 掛け合わさると絵の輪郭とずれて見える。
 
     ImGui::Dummy(ImVec2(size, size));
 }

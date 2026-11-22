@@ -1,7 +1,7 @@
 # goals — プロジェクトの目的と完成形
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-22 21:46
 
 仕様書: [surface-graph 仕様書](https://claude.ai/artifact/JbQm14E7aePXdUCXaoXpzK)
 
@@ -21,8 +21,9 @@ UI の見た目と操作は、姉妹プロジェクト terrain-graph（`D:/GitHu
 
 ## 完成形
 
-1. **ゴール 1**: ノードグラフだけで、BaseColor / Normal / Roughness / Metallic / Height / AO の
-   6 チャンネルを生成できる。
+1. **ゴール 1**: ノードグラフだけで、PBR テクスチャ一式（Albedo / Normal / Roughness / Metalness /
+   AO / Displacement / Opacity）を生成できる。マップの名前と決まりは **Megascans に合わせる**
+   （[docs/design/material-output.md](../design/material-output.md)）。
 2. **ゴール 2**: パラメータを変えると、2048² のグラフが 100ms 以内に再評価され、3D プレビューに反映される。
 3. **ゴール 3**: グラフを JSON で保存でき、同じシードなら同じ出力がビット単位で再現される。
 
@@ -52,5 +53,6 @@ UI の見た目と操作は、姉妹プロジェクト terrain-graph（`D:/GitHu
 
 ## 現在の到達点
 
-フェーズ 1（基盤）の関門「CLI で PNG 出力」を通過し、フェーズ 2（エディタ）の主要部分が動いている。
+フェーズ 1（基盤）の関門「CLI で PNG 出力」を通過し、フェーズ 2（エディタ）の主要部分と、
+フェーズ 3 の 3D ビュー（最初の版）が動いている。
 詳細は [progress.md](progress.md) を参照。

@@ -21,7 +21,8 @@ namespace {
 // 使い方:
 //   surface_graph.exe [<graph.sgraph>] [--open <graph.sgraph>]
 //                     [--screenshot-ui <path>] [--screenshot-frame <n>]
-//                     [--select-node <id>] [--language ja|en] [--gpu-validation]
+//                     [--select-node <id>] [--preview-shape sphere|plane]
+//                     [--language ja|en] [--gpu-validation]
 sg::StartupOptions ParseCommandLine() {
     sg::StartupOptions options;
     int argc = 0;
@@ -41,6 +42,8 @@ sg::StartupOptions ParseCommandLine() {
         } else if (argument == L"--language" && i + 1 < argc) {
             const std::wstring language = argv[++i];
             if (language == L"ja" || language == L"en") options.language = (language == L"en") ? "en" : "ja";
+        } else if (argument == L"--preview-shape" && i + 1 < argc) {
+            options.previewShape = (std::wstring(argv[++i]) == L"plane") ? 1 : 0;
         } else if (argument == L"--gpu-validation") {
             options.gpuValidation = true;
         } else if (!argument.empty() && argument[0] != L'-' && options.graphPath.empty()) {

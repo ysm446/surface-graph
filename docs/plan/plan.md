@@ -1,7 +1,7 @@
 # plan — 実装方針と優先順位
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-22 21:46
 
 ## 全体の構成
 
@@ -13,7 +13,7 @@ UI はグラフモデルを編集するだけで、GPU を直接触らない。�
 | --- | --- | --- |
 | UI | `src/app` `src/ui` | ノードエディタ、パラメータ、2D ビュー、アンドゥ |
 | グラフモデル | `src/graph` `src/io` | Graph / Node / Link / Param、ノードのレジストリ、JSON |
-| 評価エンジン | `src/engine` | 評価順、ハッシュによる再計算の判定、テクスチャプール |
+| 評価エンジン | `src/engine` | 評価順、ハッシュによる再計算の判定、テクスチャプール、3D ビューの描画 |
 | DX12 ラッパー | `src/rhi` | デバイス、ディスクリプタヒープ、シェーダコンパイル、PSO |
 | CLI | `src/cli` | `surfgraph-cli`（render / check / golden / nodes） |
 
@@ -54,8 +54,9 @@ surfgraph-cli render graphs/tests/all_nodes.sgraph --out data/out/all --res 1024
    マウス操作は自動では確かめられていない（[progress.md](progress.md) の「未確認」）。
 2. フェーズ 2 の残り: リンク上へのドロップで挿入、コメント枠とグループ、ヒストグラム、
    ピクセル値のホバー表示、ノードごとの GPU 時間（プロファイラ）、サムネイルのミップ生成。
-3. フェーズ 3: 3D ビュー（GGX + IBL、パララックス）、エクスポート（PNG 16bit / EXR / DDS、
-   パッキングのプリセット）、Bitmap Input、Curve。
+3. フェーズ 3: エクスポート（PNG 16bit / EXR / DDS、パッキングのプリセット。Megascans の `_ORD` を含む）、
+   3D ビューの HDRI による IBL、Bitmap Input、Curve。
+   3D ビューの最初の版（球 / 平面、GGX、手続きの空、パララックス）は実装済み。
 4. フェーズ 4: Flood Fill、Scatter、Subgraph、Pixel Processor、バッチ出力。
 
 ## タスクの分担

@@ -1,14 +1,16 @@
 # progress — 進捗と注意点
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:59
+更新日時: 2026-11-22 21:46
 
 ## 現在の状態
 
 - フェーズ 1（基盤）: **完了**。関門「CLI で PNG 出力」を通過。
 - フェーズ 2（エディタ）: **主要部分を実装済み**。関門「GUI で編集 → 保存」は、起動とスクリーンショットまで
   確認した。マウスでの編集操作は人の手で未確認。
-- フェーズ 3 / 4: ノードの一部を先行して実装した（下の表）。3D ビューとエクスポートは未着手。
+- フェーズ 3: **3D ビューの最初の版を実装済み**（球 / 平面、GGX、手続きの空、パララックス）。
+  出力は Megascans に合わせた Material Output ノードに置き換えた。エクスポートは未着手。
+- フェーズ 4: ノードの一部を先行して実装した（下の表）。
 
 ## 完了済み
 
@@ -41,6 +43,17 @@
   未保存の確認、シェーダのホットリロード、スライダー操作中の 1/4 解像度プレビュー。
 - `--screenshot-ui` で UI を 1 枚撮れる。
 
+### フェーズ 3 — Material Output と 3D ビュー（2026-11-22）
+
+- **Material Output ノード**（`io.material`）: Albedo / Normal / Roughness / Metalness / AO /
+  Displacement / Opacity の 7 入力。名前と決まりは Megascans に合わせた。
+  用途タグ付きの `io.output` は廃止した。
+- ノードの入力の上限を 6 本から 8 本に広げた（ルート定数の並びを変更）。
+- **3D ビュー**: Material Output に繋がったマップを球 / 平面に貼って描く。Cook-Torrance（GGX）、
+  太陽 + 手続きの空、パララックスオクルージョン、ACES。視点とライトをドラッグで回せる。
+- 既定のレイアウトを、上段の左に 2D ビュー、右に 3D ビューに変えた。
+- 設計は [docs/design/material-output.md](../design/material-output.md)。
+
 ### 実装済みのノード（35 種類）
 
 | カテゴリ | ノード |
@@ -53,7 +66,7 @@
 | ブレンド | Blend（8 モード、マスク入力）、Height Blend |
 | カラー | Gradient Map、HSL、Grayscale、Channel Split / Merge |
 | 導出 | Height → Normal、Height → AO、Curvature |
-| 入出力 | Output |
+| 入出力 | Material Output |
 
 一覧と各パラメータは [docs/nodes/README.md](../nodes/README.md)。
 
@@ -72,7 +85,8 @@
 
 ### フェーズ 3
 
-- 3D ビュー（GGX + IBL、パララックスオクルージョン、ACES / AgX）。
+- 3D ビューの残り: HDRI による IBL（事前フィルタ + BRDF LUT）、キューブ / 円柱 / OBJ、AgX、
+  テッセレーションによる変位、セルフシャドウ、表示設定の保存。
 - エクスポート（PNG 8 / 16bit、EXR、DDS、パッキングのプリセット、別解像度での再評価）。
 - 優先度 A の残り: Curve、Bitmap Input。
 - 優先度 B の残り: Domain-warped FBM、Crystal、Scatter、Flood Fill、Splatter Circular、
@@ -89,6 +103,10 @@
 - **ゴール 2 の計測**（2048² のグラフを 100ms 以内に再評価）。計測の仕組み（ノードごとの GPU 時間）が
   まだ無い。レンガのグラフ（38 ノード、2048²）は、起動からスクリーンショットまで 1 秒未満で終わっている。
 - エンジンへ取り込んだときの見た目（エクスポートが無いので確かめられない）。
+- **3D ビューのマウス操作**（視点とライトのドラッグ、ホイール、表示設定のポップアップ）。
+  球と平面の表示はスクリーンショットで確認した。
+- **Megascans の法線の向き**。公式資料で確認できておらず、既定を DirectX にしてある
+  （[material-output.md](../design/material-output.md)）。実際の素材と並べて確かめたい。
 
 ## 注意点
 

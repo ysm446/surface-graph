@@ -71,6 +71,8 @@ struct NodeDef {
     // 複数パス。pass i は pass i-1 の結果（sg_prev）を読み、最後のパスが出力へ書く。
     // passCount が null なら 1 パス。中間テクスチャは常に RGBA16F。
     uint32_t (*passCount)(const Node& node, uint32_t resolution) = nullptr;
+    // 出力ピンを UI に出さない（Material Output。出力はサムネイル用にだけ持つ）。
+    bool hideOutputs = false;
     ui::LocalizedText tooltip = {"", ""};
 
     int FindInput(std::string_view name) const;
@@ -81,10 +83,17 @@ struct NodeDef {
 const std::vector<NodeDef>& AllNodeDefs();
 const NodeDef* FindNodeDef(std::string_view type);
 
-// io.output ノードの用途タグ（params[0] の Enum 値）。
-enum class OutputUsage { BaseColor, Normal, Roughness, Metallic, Height, AO, Emissive, Count };
-const char* OutputUsageName(OutputUsage usage);
-inline constexpr const char* kOutputNodeType = "io.output";
+// ノードの入出力の上限（ルート定数の枠）。
+inline constexpr uint32_t kMaxNodeInputs = 8;
+inline constexpr uint32_t kMaxNodeOutputs = 4;
+
+// マテリアルの出力ノード。入力ピンの並びは Megascans のマップに合わせる（この番号がピンの番号）。
+// docs/design/material-output.md を参照。
+inline constexpr const char* kMaterialNodeType = "io.material";
+enum class MaterialChannel { Albedo, Normal, Roughness, Metalness, AO, Displacement, Opacity, Count };
+const char* MaterialChannelName(MaterialChannel channel);
+// params[0]: 法線の形式（0 DirectX / 1 OpenGL）。
+inline constexpr int kMaterialParamNormalFormat = 0;
 
 struct Node {
     uint64_t id = 0;
@@ -150,6 +159,9 @@ struct Graph {
 
     // 出力ピンの実際の型（Auto を解決した後）。Gray か Color を返す。
     PinType ResolveOutputType(uint64_t node, int pin) const;
+
+    // 最初の Material Output ノード（無ければ null）。3D ビューとエクスポートはこれを見る。
+    const Node* FindMaterialNode() const;
 };
 
 inline constexpr uint32_t kMinResolution = 256;

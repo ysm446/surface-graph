@@ -26,7 +26,7 @@ constexpr size_t kMaxPooled = 24;
 // b0 のルート定数。shaders/sg_common.hlsli の SgNode と並びを合わせること。
 struct NodeConstants {
     uint32_t outputs[4];
-    uint32_t inputs[6];
+    uint32_t inputs[graph::kMaxNodeInputs];
     uint32_t resolution;
     uint32_t seed;
     uint32_t connected;
@@ -34,7 +34,7 @@ struct NodeConstants {
     uint32_t pass;
     uint32_t passCount;
     uint32_t prevIndex;
-    uint32_t reserved[3];
+    uint32_t reserved;
 };
 static_assert(sizeof(NodeConstants) == sizeof(uint32_t) * rhi::kRootConstantCount);
 
@@ -283,7 +283,7 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
     result.resolution = resolution;
 
     // 出力テクスチャ。大きさか型が変わったものだけ取り替える。
-    const size_t outputCount = std::min<size_t>(def.outputs.size(), 4);
+    const size_t outputCount = std::min<size_t>(def.outputs.size(), graph::kMaxNodeOutputs);
     for (size_t i = outputCount; i < result.outputs.size(); ++i) Release(result.outputs[i].texture);
     result.outputs.resize(outputCount);
     for (size_t i = 0; i < outputCount; ++i) {
@@ -314,9 +314,9 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
     NodeConstants constants = {};
     constants.resolution = resolution;
     constants.seed = MixSeed(graph.seed, node.seedOffset);
-    for (uint32_t i = 0; i < 6; ++i) constants.inputs[i] = m_black.SrvIndex();
+    for (uint32_t i = 0; i < graph::kMaxNodeInputs; ++i) constants.inputs[i] = m_black.SrvIndex();
 
-    const size_t inputCount = std::min<size_t>(def.inputs.size(), 6);
+    const size_t inputCount = std::min<size_t>(def.inputs.size(), graph::kMaxNodeInputs);
     for (size_t i = 0; i < inputCount; ++i) {
         const graph::Link* link = graph.InputLink(node.id, static_cast<int>(i));
         if (link == nullptr) continue;

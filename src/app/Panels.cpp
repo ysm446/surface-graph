@@ -336,9 +336,9 @@ void Application::DrawView2dPanel() {
     if (outputCount > 1) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ui::TextScaled(96.0f));
-        if (ImGui::BeginCombo("##output", node->def->outputs[m_viewOutput].label.Get())) {
+        if (ImGui::BeginCombo("##output", node->def->outputs[m_viewOutput].label.english)) {
             for (int i = 0; i < outputCount; ++i) {
-                if (ImGui::Selectable(node->def->outputs[i].label.Get(), i == m_viewOutput)) m_viewOutput = i;
+                if (ImGui::Selectable(node->def->outputs[i].label.english, i == m_viewOutput)) m_viewOutput = i;
             }
             ImGui::EndCombo();
         }
@@ -411,6 +411,102 @@ void Application::DrawView2dPanel() {
                               ui::Tr("このノードはエラーで評価できません。", "This node failed to evaluate."));
         }
         drawList->PopClipRect();
+    }
+    ImGui::End();
+}
+
+void Application::DrawView3dPanel() {
+    if (m_focusDefaultTabs > 0) ImGui::SetNextWindowFocus();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    const bool open = ImGui::Begin(ui::Tr("3D ビュー###View3D", "3D View###View3D"), nullptr,
+                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    m_view3dVisible = open;
+    if (!open) {
+        ImGui::End();
+        return;
+    }
+
+    engine::PreviewSettings& settings = m_previewSettings;
+    const float pad = ui::Scaled(8.0f);
+    ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + pad * 0.5f});
+    ImGui::AlignTextToFramePadding();
+    static const ui::LocalizedText kShapes[] = {{"球", "Sphere"}, {"平面", "Plane"}};
+    const auto shapes = ui::Tr(kShapes);
+    ImGui::SetNextItemWidth(ui::TextScaled(72.0f));
+    ImGui::Combo("##shape", &settings.shape, shapes.data(), static_cast<int>(shapes.size()));
+    ImGui::SameLine();
+    if (ImGui::Button(ui::Tr("表示設定", "View Settings"))) ImGui::OpenPopup("##view3dSettings");
+    ImGui::SameLine();
+    if (ImGui::Button(ui::Tr("視点を戻す", "Reset View"))) {
+        const engine::PreviewSettings defaults;
+        settings.yaw = defaults.yaw;
+        settings.pitch = defaults.pitch;
+        settings.distance = defaults.distance;
+    }
+    if (m_graph.FindMaterialNode() == nullptr) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::WarnColor()), "%s",
+                           ui::Tr("Material Output ノードがありません", "No Material Output node"));
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.5f, pad * 1.5f));
+    if (ImGui::BeginPopup("##view3dSettings")) {
+        const engine::PreviewSettings defaults;
+        if (ui::BeginPropertyTable("View3dRows")) {
+            ui::PropertyFloat(ui::Tr("タイル", "Tiling"), &settings.tiling, 0.5f, 8.0f, defaults.tiling,
+                              ui::Tr("テクスチャを繰り返す数。", "How many times the texture repeats."), "%.2f", 0, 0.5f);
+            ui::PropertyFloat(ui::Tr("視差の高さ", "Parallax Height"), &settings.displacementScale, 0.0f, 0.2f,
+                              defaults.displacementScale,
+                              ui::Tr("Displacement の 1 が、タイル 1 枚の一辺の何倍の高さに当たるか。0 で視差なし。0.5 が基準面。",
+                                     "Height of Displacement value 1 as a fraction of one tile. 0 disables parallax. 0.5 is the base level."));
+            ui::PropertyFloat(ui::Tr("露出", "Exposure"), &settings.exposure, 0.1f, 4.0f, defaults.exposure);
+            ui::PropertyFloat(ui::Tr("ライトの強さ", "Light Intensity"), &settings.lightIntensity, 0.0f, 10.0f,
+                              defaults.lightIntensity);
+            ui::PropertyFloat(ui::Tr("ライトの向き", "Light Direction"), &settings.lightYaw, -3.14f, 3.14f, defaults.lightYaw,
+                              ui::Tr("ライトの水平方向の角度（ラジアン）。Shift + ドラッグでも回せる。",
+                                     "Horizontal light angle in radians. Shift + drag also rotates it."));
+            ui::PropertyFloat(ui::Tr("ライトの高さ", "Light Elevation"), &settings.lightPitch, 0.05f, 1.5f, defaults.lightPitch,
+                              ui::Tr("ライトの仰角（ラジアン）。", "Light elevation in radians."));
+            ui::PropertyFloat(ui::Tr("環境光", "Environment"), &settings.environmentIntensity, 0.0f, 4.0f,
+                              defaults.environmentIntensity);
+            ui::PropertyBool(ui::Tr("空を表示", "Show Sky"), &settings.showSky, defaults.showSky,
+                             ui::Tr("背景に、映り込みに使っている空を出す。", "Shows the sky used for reflections in the background."));
+            ui::EndPropertyTable();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+
+    const ImVec2 areaMin = {ImGui::GetWindowPos().x, ImGui::GetCursorScreenPos().y + pad * 0.5f};
+    const ImVec2 areaMax = {ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y};
+    const ImVec2 areaSize = {areaMax.x - areaMin.x, areaMax.y - areaMin.y};
+    m_view3dWidth = (areaSize.x > 8.0f) ? static_cast<uint32_t>(areaSize.x) : 0;
+    m_view3dHeight = (areaSize.y > 8.0f) ? static_cast<uint32_t>(areaSize.y) : 0;
+    if (m_view3dWidth > 0 && m_view3dHeight > 0) {
+        ImGui::SetCursorScreenPos(areaMin);
+        ImGui::InvisibleButton("##view3dCanvas", areaSize, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        const ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsItemActive() && (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle))) {
+            if (io.KeyShift) {
+                // Shift + ドラッグでライトを回す。
+                settings.lightYaw += io.MouseDelta.x * 0.01f;
+                settings.lightPitch = std::clamp(settings.lightPitch + io.MouseDelta.y * 0.01f, 0.05f, 1.5f);
+            } else {
+                settings.yaw -= io.MouseDelta.x * 0.01f;
+                settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, -1.5f, 1.5f);
+            }
+        }
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f) {
+            settings.distance = std::clamp(settings.distance * std::pow(0.9f, io.MouseWheel), 1.2f, 20.0f);
+        }
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const rhi::GpuTexture& texture = m_preview.Texture();
+        if (texture.IsValid() && texture.srv.IsValid()) {
+            drawList->AddImage(static_cast<ImTextureID>(texture.srv.gpu.ptr), areaMin, areaMax);
+        } else {
+            drawList->AddRectFilled(areaMin, areaMax, ImGui::GetColorU32(ImGuiCol_ChildBg));
+        }
     }
     ImGui::End();
 }

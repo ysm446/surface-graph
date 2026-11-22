@@ -59,7 +59,7 @@ inline constexpr float kMaxFontSize = 28.0f;
 
 // グラフのノードに出すサムネイル（ノードの出力）の一辺。
 // このアプリではノードの中身を見分ける手掛かりがサムネイルしか無いので、模様が読める大きさにする。
-inline constexpr float kNodeThumbnail = 96.0f;
+inline constexpr float kNodeThumbnail = 128.0f;
 
 // 列の境界を掴める幅（96 DPI 基準）。線そのものより広く取らないと狙って掴めない。
 inline constexpr float kSplitterGrabWidth = 8.0f;

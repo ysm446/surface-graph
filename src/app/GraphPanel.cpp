@@ -75,22 +75,36 @@ bool ContainsIgnoreCase(std::string_view text, std::string_view needle) {
     return it != text.end();
 }
 
-// キャンバスの背景。点の格子を、拡大率に合わせて間引きながら描く。
-void DrawGraphDots(const ImVec2& canvasMin, const ImVec2& canvasMax, float zoom) {
+// キャンバスの背景。背景色を塗り、その上に薄い点の格子を置く（terrain-graph と同じ描き方）。
+// 画面座標で描くので、点の大きさは拡大率によらず 2 px。引いたときは間隔を広げて密集を防ぐ。
+void DrawGraphDots(const ImVec2& screenMin, const ImVec2& screenMax) {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    float spacing = 24.0f;
-    while (spacing * zoom < 12.0f) spacing *= 2.0f;
-    const ImU32 color = ImGui::ColorConvertFloat4ToU32(ImVec4(0.26f, 0.26f, 0.26f, 0.46f));
-    const float size = 1.0f / std::max(zoom, 0.01f);
-    const float startX = std::floor(canvasMin.x / spacing) * spacing;
-    const float startY = std::floor(canvasMin.y / spacing) * spacing;
-    // 点が多すぎるときは描かない（極端に引いたとき）。
-    if ((canvasMax.x - startX) / spacing * ((canvasMax.y - startY) / spacing) > 40000.0f) return;
-    for (float y = startY; y < canvasMax.y; y += spacing) {
-        for (float x = startX; x < canvasMax.x; x += spacing) {
-            drawList->AddRectFilled({x - size, y - size}, {x + size, y + size}, color);
+    const ImVec2 canvasMin = ed::ScreenToCanvas(screenMin);
+    const ImVec2 canvasMax = ed::ScreenToCanvas(screenMax);
+    constexpr float kBaseSpacing = 24.0f;
+    const ImU32 backgroundColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.112f, 0.112f, 0.112f, 1.0f));
+    const ImU32 dotColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.26f, 0.26f, 0.26f, 0.46f));
+
+    ed::Suspend();
+    drawList->PushClipRect(screenMin, screenMax, true);
+    drawList->AddRectFilled(screenMin, screenMax, backgroundColor);
+    const ImVec2 screen0 = ed::CanvasToScreen(ImVec2(0.0f, 0.0f));
+    const ImVec2 screenStep = ed::CanvasToScreen(ImVec2(kBaseSpacing, 0.0f));
+    const float baseScreenSpacing = std::max(1.0f, std::abs(screenStep.x - screen0.x));
+    const float spacing = kBaseSpacing * std::max(1.0f, std::ceil(12.0f / baseScreenSpacing));
+    const float startX = std::floor(std::min(canvasMin.x, canvasMax.x) / spacing) * spacing;
+    const float endX = std::ceil(std::max(canvasMin.x, canvasMax.x) / spacing) * spacing;
+    const float startY = std::floor(std::min(canvasMin.y, canvasMax.y) / spacing) * spacing;
+    const float endY = std::ceil(std::max(canvasMin.y, canvasMax.y) / spacing) * spacing;
+    for (float y = startY; y <= endY; y += spacing) {
+        for (float x = startX; x <= endX; x += spacing) {
+            const ImVec2 screen = ed::CanvasToScreen(ImVec2(x, y));
+            if (screen.x < screenMin.x || screen.x > screenMax.x || screen.y < screenMin.y || screen.y > screenMax.y) continue;
+            drawList->AddRectFilled(ImVec2(screen.x - 1.0f, screen.y - 1.0f), ImVec2(screen.x + 1.0f, screen.y + 1.0f), dotColor);
         }
     }
+    drawList->PopClipRect();
+    ed::Resume();
 }
 
 }  // namespace
@@ -186,15 +200,7 @@ void Application::DrawGraphNode(const graph::Node& node) {
         ImGui::TextColored(ImVec4(0.88f, 0.88f, 0.88f, 1.0f), "%s", def.label.Get());
     }
 
-    // サムネイル。
-    ImGui::Dummy({width, 2.0f});
-    ui::ThumbnailImage(NodeThumbnail(node.id, 0), thumbnail);
-    if (def.outputs.size() > 1) {
-        // 2 つ目の出力は少し小さく横に並べる。
-        ImGui::SameLine(0.0f, 6.0f);
-        ui::ThumbnailImage(NodeThumbnail(node.id, 1), thumbnail * 0.5f);
-    }
-    ImGui::Dummy({width, 6.0f});
+    ImGui::Dummy({width, 4.0f});
 
     // ピン。入力は左、出力は右に、同じ行へ並べる。
     const ImVec4 labelColor = {0.62f, 0.64f, 0.62f, 1.0f};
@@ -208,7 +214,7 @@ void Application::DrawGraphNode(const graph::Node& node) {
             drawList->AddCircle(center, radius, ImGui::ColorConvertFloat4ToU32(color), 16, 1.6f);
         }
     };
-    const size_t rows = std::max(def.inputs.size(), def.outputs.size());
+    const size_t rows = std::max(def.inputs.size(), def.hideOutputs ? size_t{0} : def.outputs.size());
     for (size_t row = 0; row < rows; ++row) {
         const float rowY = ImGui::GetCursorPosY();
         const float rowScreenY = ImGui::GetCursorScreenPos().y;
@@ -227,17 +233,17 @@ void Application::DrawGraphNode(const graph::Node& node) {
             drawCircle(center, PinTypeColor(type), link != nullptr);
             ImGui::SameLine(0.0f, 2.0f);
             ImGui::SetCursorPosY(rowY + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f);
-            ImGui::TextColored(labelColor, "%s", def.inputs[row].label.Get());
+            ImGui::TextColored(labelColor, "%s", def.inputs[row].label.english);
             // ラベルも掴める範囲に含める。縁の丸まで届くよう左へ広げる。
             ed::PinRect({nodeLeftX - radius * 2.0f, min.y}, {ImGui::GetItemRectMax().x, min.y + rowHeight});
             ed::EndPin();
         } else {
             ImGui::Dummy({8.0f, rowHeight});
         }
-        if (row < def.outputs.size()) {
+        if (row < def.outputs.size() && !def.hideOutputs) {
             const int index = static_cast<int>(row);
             const graph::PinType type = m_graph.ResolveOutputType(node.id, index);
-            const char* label = def.outputs[row].label.Get();
+            const char* label = def.outputs[row].label.english;
             const float labelWidth = ImGui::CalcTextSize(label).x;
             ImGui::SameLine();
             ImGui::SetCursorPosX(rowStartX + width - labelWidth - 10.0f);
@@ -259,6 +265,22 @@ void Application::DrawGraphNode(const graph::Node& node) {
         }
         ImGui::SetCursorPosY(rowY + rowHeight);
         ImGui::Dummy({width, 0.0f});
+    }
+
+    // サムネイル（1 つ目の出力）。ピンの下、中央に置く。
+    ImGui::Dummy({width, 6.0f});
+    ImGui::SetCursorPosX(rowStartX + (width - thumbnail) * 0.5f);
+    ui::ThumbnailImage(NodeThumbnail(node.id, 0), thumbnail);
+
+    // 一番下に、このノードの解像度（グラフの解像度 × ノードごとの倍率）。
+    {
+        int shift = std::clamp(node.resolutionShift, -4, 4);
+        uint32_t resolution = m_graph.resolution;
+        for (; shift > 0; --shift) resolution *= 2;
+        for (; shift < 0; ++shift) resolution /= 2;
+        resolution = std::clamp(resolution, 16u, graph::kMaxResolution);
+        ImGui::Dummy({width, 4.0f});
+        ImGui::TextDisabled("%u × %u", resolution, resolution);
     }
 
     ImGui::PopID();
@@ -362,7 +384,7 @@ void Application::DrawGraphPanel() {
     const ImVec2 canvasScreenSize = ImGui::GetContentRegionAvail();
 
     ed::SetCurrentEditor(m_editor);
-    ed::PushStyleColor(ed::StyleColor_Bg, ImVec4(0.112f, 0.112f, 0.112f, 1.0f));
+    ed::PushStyleColor(ed::StyleColor_Bg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ed::PushStyleColor(ed::StyleColor_Grid, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     // 選択とホバーの枠は ed::End で描かれるので、ノードごとではなくエディタ全体に掛ける。
     // 配色のアクセント（#96A3AD）に合わせる。
@@ -370,9 +392,7 @@ void Application::DrawGraphPanel() {
     ed::PushStyleColor(ed::StyleColor_SelNodeBorder, ImVec4(0.59f, 0.64f, 0.68f, 1.0f));
     ed::Begin("surfaceGraphEditor", canvasScreenSize);
 
-    DrawGraphDots(ed::ScreenToCanvas(canvasScreenMin),
-                  ed::ScreenToCanvas({canvasScreenMin.x + canvasScreenSize.x, canvasScreenMin.y + canvasScreenSize.y}),
-                  ed::GetCurrentZoom());
+    DrawGraphDots(canvasScreenMin, {canvasScreenMin.x + canvasScreenSize.x, canvasScreenMin.y + canvasScreenSize.y});
 
     // モデル → エディタ。開いた直後・アンドゥの直後は全ノード、それ以外は足したノードだけ。
     if (m_placeAllNodes) {

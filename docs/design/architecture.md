@@ -1,7 +1,7 @@
 # architecture — 全体の設計
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-22 21:46
 
 ## 層の分け方
 
@@ -14,7 +14,7 @@ UI 層            src/app, src/ui      ノードエディタ / パラメータ /
   ▼                                              │
 グラフモデル     src/graph, src/io    Graph / Node / Link / Param、レジストリ、JSON
   ▼
-評価エンジン     src/engine           評価順、ハッシュ、テクスチャプール、複数パス
+評価エンジン     src/engine           評価順、ハッシュ、テクスチャプール、複数パス、3D ビュー
   ▼
 DX12 ラッパー    src/rhi              デバイス、ディスクリプタヒープ、DXC、PSO
 ```
@@ -66,8 +66,8 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 
 - Uniform Color や Gradient Map の色は、ピッカーで見た値をそのままテクスチャへ書く。
 - 2D ビューとサムネイルは、テクスチャの値をそのまま表示する（変換しない）。
-- エクスポートでは、BaseColor をそのまま sRGB の画像として書き、それ以外はリニアのデータとして書く。
-- 3D ビュー（フェーズ 3）では、BaseColor をシェーダで sRGB → リニアに直してから使う。
+- エクスポートでは、Albedo をそのまま sRGB の画像として書き、それ以外はリニアのデータとして書く。
+- 3D ビューでは、Albedo をシェーダで sRGB → リニアに直してから使う。
 
 理由: Substance Designer がこの扱いで、Gray（高さ・マスク）と Color（色・法線）を同じ式で
 合成できる。リニアで持つと、法線とカラーを見分けて表示や書き出しを変える必要が出る。
@@ -83,12 +83,14 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 | Undo | コマンドパターン | グラフ全体のスナップショット | グラフは小さく、差し替えるだけで必ず元に戻る。スライダーの連続操作は、掴んでいる部品が同じ間 1 手にまとめる |
 | 色 | BaseColor は sRGB、他はリニアで書き出す | 上の「色の扱い」のとおり（書き出しの結果は同じ） | Substance Designer の慣習に合わせた |
 | 保存形式 | JSON | JSON（拡張子 `.sgraph`） | 他の JSON と区別して関連付けできるようにした |
-| Curvature | 法線から | 法線から（同じ） | — |
+| 出力 | 用途タグ付きの Output を用途ごとに置く | マップごとの入力を持つ Material Output を 1 つ置く | Megascans のマップ構成に合わせ、3D ビューが 1 つのノードから全マップを取れるようにした（[material-output.md](material-output.md)） |
+| 3D ビュー | メッシュ + HDRI の IBL | コンピュートシェーダーで球 / 平面と交差させ、手続きの空で照らす | まず少ない仕組みで確認できる状態にした。HDRI の IBL は後で足す |
 | ノードのサムネイル | 128² をミップ生成 | フル解像度をそのまま縮小表示（96 px） | ミップ生成は未実装（[progress.md](../plan/progress.md)） |
 
 ## ファイル
 
 - グラフの形式: [docs/reference/file-format.md](../reference/file-format.md)
+- マテリアルの出力と 3D ビュー: [material-output.md](material-output.md)
 - シェーダの規約: [shader-conventions.md](shader-conventions.md)
 - ノードの足し方: [adding-nodes.md](adding-nodes.md)
 - UI の規約: [design-guide.md](design-guide.md)

@@ -115,6 +115,8 @@ target_link_libraries(sg_graph PUBLIC sg_common_options nlohmann_json::nlohmann_
 add_library(sg_engine STATIC
     src/engine/Evaluator.cpp
     src/engine/Evaluator.h
+    src/engine/MaterialPreview.cpp
+    src/engine/MaterialPreview.h
     src/core/ImageIo.cpp
     src/core/ImageIo.h
     src/rhi/Common.cpp

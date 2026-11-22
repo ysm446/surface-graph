@@ -1,7 +1,7 @@
 # shader-conventions — ノードのシェーダの規約
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-22 21:46
 
 ノードのシェーダは `shaders/nodes/<カテゴリ>_<名前>.hlsl` に置き、エントリポイントは `main`、
 `[numthreads(8, 8, 1)]` のコンピュートシェーダにする。全ノードが `sg_common.hlsli` を include する
@@ -51,7 +51,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
 ## 定数
 
-- **b0（ルート定数 20 dword）**: `sgOut` `sgIn03` `sgIn45` `sgResolution` `sgSeed` `sgConnected`
+- **b0（ルート定数 20 dword）**: `sgOut` `sgIn03` `sgIn47` `sgResolution` `sgSeed` `sgConnected`
   `sgColorMask` `sgPass` `sgPassCount` `sgPrevIndex`。評価エンジンの `NodeConstants` と並びを合わせる。
 - **b1（パラメータ）**: ノード定義から宣言を自動生成し、`-D SG_PARAMS_DECL=...` で渡す。
   シェーダはパラメータ名をそのまま変数として使う。シェーダの先頭に `// params: ...` の

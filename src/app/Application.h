@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/Window.h"
 #include "engine/Evaluator.h"
+#include "engine/MaterialPreview.h"
 #include "graph/Graph.h"
 #include "rhi/Device.h"
 #include "rhi/PipelineCache.h"
@@ -30,6 +31,7 @@ struct StartupOptions {
     uint64_t selectNode = 0;                 // --select-node（スクリーンショットの確認用）
     std::string language;                    // --language ja|en
     bool gpuValidation = false;
+    int previewShape = -1;                   // --preview-shape sphere|plane（スクリーンショットの確認用）
 };
 
 // エディタ本体。UI はグラフモデル（m_graph）を編集するだけで、GPU は評価エンジン越しにしか触らない。
@@ -53,6 +55,7 @@ private:
     // --- パネル（Panels.cpp） ---
     void DrawParameterPanel();
     void DrawView2dPanel();
+    void DrawView3dPanel();
     void DrawGraphSettingsPanel();
     void DrawConfirmDiscard();
     // 値が変わったら true。
@@ -97,6 +100,7 @@ private:
     rhi::ShaderCompiler m_shaderCompiler;
     rhi::PipelineCache m_pipelineCache;
     engine::Evaluator m_evaluator;
+    engine::MaterialPreview m_preview;
     ImGuiLayer m_imgui;
     ui::ToastQueue m_toasts;
     bool m_comInitialized = false;
@@ -146,6 +150,12 @@ private:
     ImVec2 m_viewPan = {0.0f, 0.0f};
     // チャンネル単独表示用の SRV。フレームごとに書き換えるので、フレーム数ぶん持って回す。
     rhi::DescriptorHandle m_channelViews[rhi::kFrameCount];
+
+    // 3D ビュー。パネルが見えているフレームだけ描く。
+    engine::PreviewSettings m_previewSettings;
+    bool m_view3dVisible = false;
+    uint32_t m_view3dWidth = 0;
+    uint32_t m_view3dHeight = 0;
 
     // パラメータの右クリックメニュー
     uint64_t m_paramMenuNode = 0;

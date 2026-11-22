@@ -26,7 +26,7 @@
       "type": "noise.perlin",
       "pos": [
         0,
-        260
+        340
       ],
       "params": {
         "scale": 6,
@@ -39,7 +39,7 @@
       "type": "noise.perlin",
       "pos": [
         0,
-        520
+        680
       ],
       "params": {
         "scale": 16,
@@ -53,7 +53,7 @@
       "type": "noise.worley",
       "pos": [
         0,
-        780
+        1020
       ],
       "params": {
         "scale": 24,
@@ -66,7 +66,7 @@
       "type": "noise.perlin",
       "pos": [
         0,
-        1040
+        1360
       ],
       "params": {
         "scale": 3,
@@ -91,7 +91,7 @@
       "type": "filter.warp",
       "pos": [
         320,
-        260
+        340
       ],
       "params": {
         "intensity": 0.012
@@ -102,7 +102,7 @@
       "type": "filter.slope_blur",
       "pos": [
         320,
-        520
+        680
       ],
       "params": {
         "intensity": 0.02,
@@ -127,7 +127,7 @@
       "type": "adjust.histogram_scan",
       "pos": [
         640,
-        260
+        340
       ],
       "params": {
         "position": 0.12,
@@ -139,7 +139,7 @@
       "type": "blend.blend",
       "pos": [
         640,
-        520
+        680
       ],
       "params": {
         "mode": 2,
@@ -151,7 +151,7 @@
       "type": "adjust.levels",
       "pos": [
         640,
-        780
+        1020
       ],
       "params": {
         "inLow": 0.0,
@@ -164,7 +164,7 @@
       "type": "adjust.histogram_scan",
       "pos": [
         640,
-        1040
+        1360
       ],
       "params": {
         "position": 0.75,
@@ -188,7 +188,7 @@
       "type": "derive.ao",
       "pos": [
         960,
-        260
+        340
       ],
       "params": {
         "heightScale": 0.06,
@@ -200,7 +200,7 @@
       "type": "derive.curvature",
       "pos": [
         960,
-        520
+        680
       ],
       "params": {
         "intensity": 1.5,
@@ -212,7 +212,7 @@
       "type": "adjust.histogram_scan",
       "pos": [
         960,
-        780
+        1020
       ],
       "params": {
         "position": 0.38,
@@ -224,7 +224,7 @@
       "type": "adjust.levels",
       "pos": [
         960,
-        1040
+        1360
       ],
       "params": {
         "inLow": 0.5,
@@ -248,7 +248,7 @@
       "type": "color.gradient_map",
       "pos": [
         1280,
-        260
+        340
       ],
       "params": {
         "gradient": [
@@ -296,7 +296,7 @@
       "type": "color.gradient_map",
       "pos": [
         1280,
-        520
+        680
       ],
       "params": {
         "gradient": [
@@ -338,7 +338,7 @@
       "type": "shape.uniform_color",
       "pos": [
         1600,
-        260
+        340
       ],
       "params": {
         "color": [
@@ -354,7 +354,7 @@
       "type": "blend.blend",
       "pos": [
         1600,
-        520
+        680
       ],
       "params": {
         "mode": 0,
@@ -366,7 +366,7 @@
       "type": "blend.blend",
       "pos": [
         1600,
-        780
+        1020
       ],
       "params": {
         "mode": 3,
@@ -378,7 +378,7 @@
       "type": "adjust.invert",
       "pos": [
         1600,
-        1040
+        1360
       ],
       "params": {}
     },
@@ -387,7 +387,7 @@
       "type": "shape.uniform_color",
       "pos": [
         1600,
-        1300
+        1700
       ],
       "params": {
         "color": [
@@ -415,7 +415,7 @@
       "type": "adjust.histogram_range",
       "pos": [
         1920,
-        260
+        340
       ],
       "params": {
         "range": 0.25,
@@ -427,7 +427,7 @@
       "type": "shape.uniform_color",
       "pos": [
         1920,
-        520
+        680
       ],
       "params": {
         "color": [
@@ -443,7 +443,7 @@
       "type": "blend.blend",
       "pos": [
         1920,
-        780
+        1020
       ],
       "params": {
         "mode": 0,
@@ -455,7 +455,7 @@
       "type": "shape.uniform_color",
       "pos": [
         1920,
-        1040
+        1360
       ],
       "params": {
         "color": [
@@ -468,68 +468,13 @@
     },
     {
       "id": 33,
-      "type": "io.output",
+      "type": "io.material",
       "pos": [
         2240,
         0
       ],
       "params": {
-        "usage": 0
-      }
-    },
-    {
-      "id": 34,
-      "type": "io.output",
-      "pos": [
-        2240,
-        260
-      ],
-      "params": {
-        "usage": 1
-      }
-    },
-    {
-      "id": 35,
-      "type": "io.output",
-      "pos": [
-        2240,
-        520
-      ],
-      "params": {
-        "usage": 2
-      }
-    },
-    {
-      "id": 36,
-      "type": "io.output",
-      "pos": [
-        2240,
-        780
-      ],
-      "params": {
-        "usage": 3
-      }
-    },
-    {
-      "id": 37,
-      "type": "io.output",
-      "pos": [
-        2240,
-        1040
-      ],
-      "params": {
-        "usage": 4
-      }
-    },
-    {
-      "id": 38,
-      "type": "io.output",
-      "pos": [
-        2240,
-        1300
-      ],
-      "params": {
-        "usage": 5
+        "normalFormat": 0
       }
     }
   ],
@@ -766,37 +711,37 @@
       "from": 28,
       "fromPin": "Out",
       "to": 33,
-      "toPin": "In"
+      "toPin": "Albedo"
     },
     {
       "from": 14,
       "fromPin": "Out",
-      "to": 34,
-      "toPin": "In"
+      "to": 33,
+      "toPin": "Normal"
     },
     {
       "from": 31,
       "fromPin": "Out",
-      "to": 35,
-      "toPin": "In"
+      "to": 33,
+      "toPin": "Roughness"
     },
     {
       "from": 32,
       "fromPin": "Out",
-      "to": 36,
-      "toPin": "In"
-    },
-    {
-      "from": 12,
-      "fromPin": "Out",
-      "to": 37,
-      "toPin": "In"
+      "to": 33,
+      "toPin": "Metalness"
     },
     {
       "from": 15,
       "fromPin": "Out",
-      "to": 38,
-      "toPin": "In"
+      "to": 33,
+      "toPin": "AO"
+    },
+    {
+      "from": 12,
+      "fromPin": "Out",
+      "to": 33,
+      "toPin": "Displacement"
     }
   ],
   "exposedParams": []

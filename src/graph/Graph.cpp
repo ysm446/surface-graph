@@ -22,17 +22,24 @@ const char* CategoryLabel(NodeCategory category) {
     }
 }
 
-const char* OutputUsageName(OutputUsage usage) {
-    switch (usage) {
-        case OutputUsage::BaseColor: return "BaseColor";
-        case OutputUsage::Normal:    return "Normal";
-        case OutputUsage::Roughness: return "Roughness";
-        case OutputUsage::Metallic:  return "Metallic";
-        case OutputUsage::Height:    return "Height";
-        case OutputUsage::AO:        return "AO";
-        case OutputUsage::Emissive:  return "Emissive";
-        default:                     return "";
+const char* MaterialChannelName(MaterialChannel channel) {
+    switch (channel) {
+        case MaterialChannel::Albedo:       return "Albedo";
+        case MaterialChannel::Normal:       return "Normal";
+        case MaterialChannel::Roughness:    return "Roughness";
+        case MaterialChannel::Metalness:    return "Metalness";
+        case MaterialChannel::AO:           return "AO";
+        case MaterialChannel::Displacement: return "Displacement";
+        case MaterialChannel::Opacity:      return "Opacity";
+        default:                            return "";
     }
+}
+
+const Node* Graph::FindMaterialNode() const {
+    for (const Node& node : nodes) {
+        if (std::string_view(node.def->type) == kMaterialNodeType) return &node;
+    }
+    return nullptr;
 }
 
 int NodeDef::FindInput(std::string_view name) const {

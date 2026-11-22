@@ -1,0 +1,52 @@
+#pragma once
+
+#include "graph/Graph.h"
+#include "rhi/Device.h"
+
+namespace sg::rhi {
+class PipelineCache;
+}
+
+namespace sg::engine {
+
+class Evaluator;
+
+// 3D ビューの設定。角度はラジアン。
+struct PreviewSettings {
+    int shape = 0;  // 0 球 / 1 平面
+    float yaw = 0.6f;
+    float pitch = 0.35f;
+    float distance = 3.2f;
+    float tiling = 2.0f;
+    float exposure = 1.0f;
+    float lightYaw = 0.9f;
+    float lightPitch = 0.75f;
+    float lightIntensity = 3.0f;
+    float environmentIntensity = 1.0f;
+    // Displacement 1 が、タイル 1 枚の一辺の何倍の高さに当たるか。0 で視差なし。
+    float displacementScale = 0.03f;
+    bool showSky = false;
+};
+
+// 3D ビューの描画。Material Output に繋がったマップを、球か平面に貼って RGBA8 のテクスチャへ描く。
+// シェーダは shaders/preview/material_preview.hlsl。仕様は docs/design/material-output.md。
+class MaterialPreview {
+public:
+    bool Create(rhi::Device& device, rhi::PipelineCache& pipelines);
+    void Destroy();
+
+    // commandList へ描画を記録する。評価（Evaluator::Evaluate）の後に呼ぶこと。
+    // 大きさが変わったらテクスチャを作り直す。
+    void Render(ID3D12GraphicsCommandList* commandList, const graph::Graph& graph, Evaluator& evaluator,
+                const PreviewSettings& settings, uint32_t width, uint32_t height);
+
+    // ImGui へ渡す SRV。まだ描いていなければ無効。
+    const rhi::GpuTexture& Texture() const { return m_target; }
+
+private:
+    rhi::Device* m_device = nullptr;
+    rhi::PipelineCache* m_pipelines = nullptr;
+    rhi::GpuTexture m_target;
+};
+
+}  // namespace sg::engine

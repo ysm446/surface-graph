@@ -673,17 +673,28 @@ std::vector<NodeDef> BuildDefs() {
 
     // --- 入出力 -------------------------------------------------------------
     {
+        // 入力ピンの並びは MaterialChannel と揃えること。名前は Megascans のマップ名に合わせる。
         NodeDef def;
-        def.type = kOutputNodeType;
-        def.label = {"Output", "Output"};
+        def.type = kMaterialNodeType;
+        def.label = {"Material Output", "Material Output"};
         def.category = NodeCategory::Io;
-        def.shader = L"nodes/io_output.hlsl";
-        def.inputs = {autoIn};
-        def.outputs = {autoOut};
-        def.params = {Enum("usage", {"用途", "Usage"}, 0,
-                           {{"BaseColor", "BaseColor"}, {"Normal", "Normal"}, {"Roughness", "Roughness"},
-                            {"Metallic", "Metallic"}, {"Height", "Height"}, {"AO", "AO"}, {"Emissive", "Emissive"}})};
-        def.tooltip = {"マテリアルの出力。用途ごとに 1 つ置く。", "A material output. Place one per usage."};
+        def.shader = L"nodes/io_material.hlsl";
+        def.inputs = {
+            {"Albedo", {"Albedo", "Albedo"}, PinType::Color},
+            {"Normal", {"Normal", "Normal"}, PinType::Color},
+            {"Roughness", {"Roughness", "Roughness"}, PinType::Gray},
+            {"Metalness", {"Metalness", "Metalness"}, PinType::Gray},
+            {"AO", {"AO", "AO"}, PinType::Gray},
+            {"Displacement", {"Displacement", "Displacement"}, PinType::Gray},
+            {"Opacity", {"Opacity", "Opacity"}, PinType::Gray},
+        };
+        def.outputs = {colorOut};
+        def.hideOutputs = true;
+        def.params = {Enum("normalFormat", {"法線の形式", "Normal Format"}, 0, {{"DirectX", "DirectX"}, {"OpenGL", "OpenGL"}},
+                           {"Normal に繋いだ法線マップの向き。DirectX は緑が下向き（Unreal）、OpenGL は緑が上向き（Unity / glTF）。3D ビューはこれに従って読む。",
+                            "Orientation of the connected normal map. DirectX has green pointing down (Unreal), OpenGL has green pointing up (Unity / glTF). The 3D view reads the map accordingly."})};
+        def.tooltip = {"マテリアルの出力。マップの名前は Megascans に合わせてある。繋いだものが 3D ビューに出る。繋いでいない入力は既定値（Albedo 0.5、Roughness 0.5、Metalness 0、AO 1、Opacity 1、法線は平ら）。",
+                       "The material output, with maps named after Megascans. Connected maps show in the 3D view. Unconnected inputs use defaults (Albedo 0.5, Roughness 0.5, Metalness 0, AO 1, Opacity 1, flat normal)."};
         defs.push_back(def);
     }
 

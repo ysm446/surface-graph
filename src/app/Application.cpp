@@ -24,7 +24,7 @@ constexpr size_t kMaxUndoDepth = 100;
 // 1 フレームに評価してよい量（メガピクセル × パス数）。超えたぶんは次のフレームへ持ち越して UI を止めない。
 constexpr float kFrameBudgetMegapixels = 48.0f;
 // パネルを足したり外したりしたら、この版を上げる（古いレイアウトを引き継がせない）。
-constexpr const char* kDockSpaceName = "SurfaceGraphDockSpace_v1";
+constexpr const char* kDockSpaceName = "SurfaceGraphDockSpace_v2";
 
 #if defined(SG_DEBUG)
 constexpr bool kEnableDebugLayer = true;
@@ -69,6 +69,7 @@ bool Application::Initialize(const StartupOptions& options) {
     if (!m_shaderCompiler.Create(SG_SHADER_DIR, appData.empty() ? appData : appData / L"shader-cache")) return false;
     if (!m_pipelineCache.Create(m_device.GetDevice(), &m_shaderCompiler)) return false;
     if (!m_evaluator.Create(m_device, m_pipelineCache, m_shaderCompiler)) return false;
+    if (!m_preview.Create(m_device, m_pipelineCache)) return false;
     if (!m_imgui.Initialize(m_window, m_device)) return false;
 
     for (rhi::DescriptorHandle& handle : m_channelViews) handle = m_device.SrvHeap().Allocate();
@@ -87,6 +88,8 @@ bool Application::Initialize(const StartupOptions& options) {
     // 開発用の書き出し（スクリーンショット）は日本語に固定する。--language は 1 回限りの上書き。
     ui::SetLanguage(ui::Language::Japanese);
     if (m_options.language == "en") ui::SetLanguage(ui::Language::English);
+
+    if (options.previewShape >= 0) m_previewSettings.shape = options.previewShape;
 
     CreateGraphEditor();
     NewDocument();
@@ -111,6 +114,7 @@ void Application::Shutdown() {
         if (handle.IsValid()) m_device.SrvHeap().Free(handle);
         handle = {};
     }
+    m_preview.Destroy();
     m_evaluator.Destroy();
     m_imgui.Shutdown();
     m_pipelineCache.Destroy();
@@ -160,6 +164,9 @@ int Application::Run() {
         request.budgetMegapixels = Headless() ? 0.0f : kFrameBudgetMegapixels;
         if (m_interactive) request.resolution = std::max(256u, graph::ClampResolution(m_graph.resolution) / 4);
         m_evaluationComplete = m_evaluator.Evaluate(commandList, request);
+        if (m_view3dVisible && m_view3dWidth > 0 && m_view3dHeight > 0) {
+            m_preview.Render(commandList, m_graph, m_evaluator, m_previewSettings, m_view3dWidth, m_view3dHeight);
+        }
 
         m_device.BindBackBuffer(commandList);
         m_imgui.EndFrame(commandList);
@@ -199,6 +206,7 @@ void Application::DrawUi() {
     ImGui::DockSpaceOverViewport(dockspaceId, ImGui::GetMainViewport());
 
     DrawView2dPanel();
+    DrawView3dPanel();
     DrawGraphPanel();
     DrawGraphSettingsPanel();
     DrawParameterPanel();
@@ -210,14 +218,17 @@ void Application::DrawUi() {
 }
 
 void Application::BuildDefaultLayout(ImGuiID dockspaceId) {
-    // 中央にノードエディタ、右にパラメータ、上に 2D ビュー。
+    // 中央にノードエディタ、右にパラメータ、上に 2D ビューと 3D ビューを左右に並べる。
     ImGui::DockBuilderRemoveNode(dockspaceId);
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
     ImGuiID center = dockspaceId, right = 0, top = 0;
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, &right, &center);
     ImGui::DockBuilderSplitNode(center, ImGuiDir_Up, 0.42f, &top, &center);
+    ImGuiID top3d = 0;
+    ImGui::DockBuilderSplitNode(top, ImGuiDir_Right, 0.5f, &top3d, &top);
     ImGui::DockBuilderDockWindow("###View2D", top);
+    ImGui::DockBuilderDockWindow("###View3D", top3d);
     ImGui::DockBuilderDockWindow("###Graph", center);
     ImGui::DockBuilderDockWindow("###Parameters", right);
     ImGui::DockBuilderDockWindow("###GraphSettings", right);
@@ -435,15 +446,13 @@ void Application::ResetDocumentState() {
 }
 
 void Application::NewDocument() {
-    // 空ではなく、最小のグラフ（Perlin → Levels → Output）から始める。
+    // 空ではなく、最小のグラフ（Perlin → Levels → Material Output）から始める。
     m_graph = graph::Graph{};
     const uint64_t noise = m_graph.AddNode("noise.perlin", 0.0f, 0.0f)->id;
     const uint64_t levels = m_graph.AddNode("adjust.levels", 300.0f, 0.0f)->id;
-    graph::Node* output = m_graph.AddNode(graph::kOutputNodeType, 600.0f, 0.0f);
-    output->params[0].i = static_cast<int>(graph::OutputUsage::Height);
-    const uint64_t outputId = output->id;
+    const uint64_t outputId = m_graph.AddNode(graph::kMaterialNodeType, 600.0f, 0.0f)->id;
     m_graph.AddLink(noise, 0, levels, 0);
-    m_graph.AddLink(levels, 0, outputId, 0);
+    m_graph.AddLink(levels, 0, outputId, static_cast<int>(graph::MaterialChannel::Albedo));
     m_documentPath.clear();
     ResetDocumentState();
     m_viewNode = outputId;
@@ -462,10 +471,8 @@ bool Application::OpenDocument(const std::filesystem::path& path) {
     m_graph = std::move(loaded);
     m_documentPath = path;
     ResetDocumentState();
-    // 最初は BaseColor の出力（無ければ最後のノード）を 2D ビューに出す。
-    for (const graph::Node& node : m_graph.nodes) {
-        if (std::string_view(node.def->type) == graph::kOutputNodeType && node.params[0].i == 0) m_viewNode = node.id;
-    }
+    // 最初は Material Output（無ければ最後のノード）を 2D ビューに出す。
+    if (const graph::Node* material = m_graph.FindMaterialNode()) m_viewNode = material->id;
     if (m_viewNode == 0 && !m_graph.nodes.empty()) m_viewNode = m_graph.nodes.back().id;
     SG_LOG_INFO(ui::Tr("グラフを開きました: %s", "Opened the graph: %s"), ToUtf8Display(path).c_str());
     return true;

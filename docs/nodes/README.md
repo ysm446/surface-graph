@@ -1,7 +1,7 @@
 # ノード一覧
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 20:28
+更新日時: 2026-11-22 21:46
 
 このファイルの「ノイズ」以降は、ノードの定義（`src/graph/NodeDefinitions.cpp`）から生成する。手で書き換えない。
 ノードを足したら `surfgraph-cli nodes --markdown` の出力で置き換えること。
@@ -480,15 +480,15 @@
 
 ## 入出力
 
-### Output (`io.output`)
+### Material Output (`io.material`)
 
-マテリアルの出力。用途ごとに 1 つ置く。
+マテリアルの出力。マップの名前は Megascans に合わせてある。繋いだものが 3D ビューに出る。繋いでいない入力は既定値（Albedo 0.5、Roughness 0.5、Metalness 0、AO 1、Opacity 1、法線は平ら）。
 
-- シェーダ: `shaders/nodes/io_output.hlsl`
-- 入力: `In`（Auto）
-- 出力: `Out`（Auto）
+- シェーダ: `shaders/nodes/io_material.hlsl`
+- 入力: `Albedo`（Color）、`Normal`（Color）、`Roughness`（Gray）、`Metalness`（Gray）、`AO`（Gray）、`Displacement`（Gray）、`Opacity`（Gray）
+- 出力: `Out`（Color）
 
 | パラメータ | 名前 | 型 | 既定値 | 範囲 | 説明 |
 | --- | --- | --- | --- | --- | --- |
-| 用途 | `usage` | enum | BaseColor | 0 BaseColor / 1 Normal / 2 Roughness / 3 Metallic / 4 Height / 5 AO / 6 Emissive |  |
+| 法線の形式 | `normalFormat` | enum | DirectX | 0 DirectX / 1 OpenGL | Normal に繋いだ法線マップの向き。DirectX は緑が下向き（Unreal）、OpenGL は緑が上向き（Unity / glTF）。3D ビューはこれに従って読む。 |
 

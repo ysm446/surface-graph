@@ -7,7 +7,7 @@
 cbuffer SgNode : register(b0) {
     uint4 sgOut;         // 出力 UAV のインデックス（出力ピンの番号順）。途中のパスでは x が中間テクスチャ
     uint4 sgIn03;        // 入力 SRV のインデックス（入力ピン 0〜3）
-    uint2 sgIn45;        // 入力ピン 4〜5
+    uint4 sgIn47;        // 入力ピン 4〜7
     uint sgResolution;   // このノードの出力の一辺（ピクセル）
     uint sgSeed;         // グローバルシードとノードのシードを混ぜた値
     uint sgConnected;    // ビット i が立っていれば入力ピン i は繋がっている
@@ -15,7 +15,7 @@ cbuffer SgNode : register(b0) {
     uint sgPass;         // 複数パスのノードの、いまのパス番号
     uint sgPassCount;    // パスの総数
     uint sgPrevIndex;    // 前のパスの結果（SRV）。パス 0 では無効
-    uint3 sgReserved;
+    uint sgReserved;
 };
 
 // b1: パラメータ。宣言はノード定義（src/graph/NodeDefinitions.cpp）から自動生成して
@@ -40,7 +40,7 @@ float2 sg_uv(uint2 pixel) { return (float2(pixel) + 0.5) / float(sgResolution); 
 float sg_texel() { return 1.0 / float(sgResolution); }
 
 // --- 入力 -------------------------------------------------------------------
-uint sg_input_index(uint i) { return (i < 4) ? sgIn03[i] : sgIn45[i - 4]; }
+uint sg_input_index(uint i) { return (i < 4) ? sgIn03[i] : sgIn47[i - 4]; }
 bool sg_connected(uint i) { return ((sgConnected >> i) & 1u) != 0u; }
 bool sg_is_color(uint i) { return ((sgColorMask >> i) & 1u) != 0u; }
 float sg_luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
