@@ -1,0 +1,4 @@
+#pragma code_page(65001)
+#include "core/ResourceIds.h"
+
+SG_APP_ICON ICON "../../assets/icons/surface-graph.ico"

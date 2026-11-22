@@ -23,6 +23,8 @@ if(NOT WIN32)
     message(FATAL_ERROR "本プロジェクトは Windows 専用です。")
 endif()
 
+enable_language(RC)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -186,6 +188,7 @@ sg_deploy_runtime(surfgraph-cli)
 # --- エディタ ---------------------------------------------------------------
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/app/Main.cpp")
     add_executable(surface_graph WIN32
+        src/app/SurfaceGraph.rc
         src/app/Main.cpp
         src/app/Application.cpp
         src/app/Application.h
