@@ -94,6 +94,7 @@ bool Application::Initialize(const StartupOptions& options) {
     if (m_options.language == "en") ui::SetLanguage(ui::Language::English);
 
     if (options.previewShape >= 0) m_previewSettings.shape = options.previewShape;
+    if (options.showLightGizmo) m_lightGizmoUntil = 1.0e12;
 
     LoadSettings();
     ApplyUiScale();

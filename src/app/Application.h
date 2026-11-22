@@ -32,6 +32,7 @@ struct StartupOptions {
     std::string language;                    // --language ja|en
     bool gpuValidation = false;
     float uiScale = 0.0f;                    // --ui-scale <倍率>（スクリーンショットの確認用。0 で設定に従う）
+    bool showLightGizmo = false;             // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane（スクリーンショットの確認用）
 };
 
@@ -96,6 +97,9 @@ private:
     void LoadSettings();
     void SaveSettings() const;
     void DrawScaleMenu();
+
+    // 3D ビューに重ねるライトのギズモ（terrain-graph と同じ絵）。
+    void DrawPreviewLightGizmo(const ImVec2& areaMin, const ImVec2& areaMax);
 
     // --- 最近使ったファイル ---
     // %LOCALAPPDATA%/surface-graph/recent.txt に、新しい順で 1 行 1 パス（UTF-8）。
@@ -177,6 +181,8 @@ private:
 
     // 3D ビュー。パネルが見えているフレームだけ描く。
     engine::PreviewSettings m_previewSettings;
+    // ライトのギズモを出しておく時刻（ImGui の時刻）。掴んでいる間と、離した直後だけ出す。
+    double m_lightGizmoUntil = 0.0;
     bool m_view3dVisible = false;
     uint32_t m_view3dWidth = 0;
     uint32_t m_view3dHeight = 0;

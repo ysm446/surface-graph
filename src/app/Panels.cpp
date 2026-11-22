@@ -411,6 +411,140 @@ void Application::DrawView2dPanel() {
     ImGui::End();
 }
 
+namespace {
+
+// ライトのギズモが残る時間（秒）。掴むのをやめてから薄くなって消える。
+constexpr double kLightGizmoFadeSeconds = 0.35;
+// ライトを掴んだときの感度。terrain-graph と同じ 0.25 度 / ピクセル。
+constexpr float kLightRadiansPerPixel = 0.25f * 3.14159265f / 180.0f;
+
+struct GizmoVec3 {
+    float x, y, z;
+};
+
+}  // namespace
+
+// ライトの向きを示すギズモ。地面のリング、水平方向、仰角の弧、光が来る向きの矢印。
+// 絵と色は terrain-graph の DrawLightGizmoOverlay と同じ（色はテーマから引かない「意味を持つ色」）。
+// 視点はシェーダのレイ生成（material_preview.hlsl）と同じ式で組む。球も平面も原点まわりの半径 1。
+void Application::DrawPreviewLightGizmo(const ImVec2& areaMin, const ImVec2& areaMax) {
+    const double now = ImGui::GetTime();
+    if (now >= m_lightGizmoUntil) return;
+    const float fade = static_cast<float>(std::clamp((m_lightGizmoUntil - now) / kLightGizmoFadeSeconds, 0.0, 1.0));
+    const ImVec2 size = {areaMax.x - areaMin.x, areaMax.y - areaMin.y};
+    if (size.x <= 0.0f || size.y <= 0.0f || fade <= 0.001f) return;
+
+    const engine::PreviewSettings& settings = m_previewSettings;
+    const auto cross = [](const GizmoVec3& a, const GizmoVec3& b) {
+        return GizmoVec3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+    };
+    const auto normalize = [](const GizmoVec3& v) {
+        const float length = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+        return (length > 1e-6f) ? GizmoVec3{v.x / length, v.y / length, v.z / length} : GizmoVec3{0.0f, 1.0f, 0.0f};
+    };
+    const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
+    const float distance = std::clamp(settings.distance, 1.2f, 20.0f);
+    const GizmoVec3 offset = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};
+    const GizmoVec3 forward = normalize({-offset.x, -offset.y, -offset.z});
+    const GizmoVec3 right = normalize(cross(forward, {0.0f, 1.0f, 0.0f}));
+    const GizmoVec3 up = cross(right, forward);
+    const GizmoVec3 position = {offset.x * distance + right.x * settings.panX + up.x * settings.panY,
+                                offset.y * distance + right.y * settings.panX + up.y * settings.panY,
+                                offset.z * distance + right.z * settings.panX + up.z * settings.panY};
+    const float tanHalfFov = std::tan(engine::kPreviewFovY * 0.5f);
+
+    struct Projected {
+        ImVec2 screen;
+        bool visible;
+    };
+    const auto project = [&](const GizmoVec3& world) {
+        const GizmoVec3 d = {world.x - position.x, world.y - position.y, world.z - position.z};
+        const float z = d.x * forward.x + d.y * forward.y + d.z * forward.z;
+        // カメラの後ろに回った点は描かない。
+        if (z <= 1e-3f) return Projected{{0.0f, 0.0f}, false};
+        const float x = d.x * right.x + d.y * right.y + d.z * right.z;
+        const float y = d.x * up.x + d.y * up.y + d.z * up.z;
+        const float scale = size.y * 0.5f / (z * tanHalfFov);
+        return Projected{{areaMin.x + size.x * 0.5f + x * scale, areaMin.y + size.y * 0.5f - y * scale}, true};
+    };
+    const auto color = [fade](int r, int g, int b, int a) {
+        return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(a) * fade));
+    };
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->PushClipRect(areaMin, areaMax, true);
+
+    constexpr float kRadius = 1.0f;
+    const float azimuth = settings.lightYaw;
+    const float elevation = std::clamp(settings.lightPitch, 0.05f, 1.5f);
+    const GizmoVec3 horizontal = {std::sin(azimuth), 0.0f, std::cos(azimuth)};
+    const GizmoVec3 direction = {std::cos(elevation) * std::sin(azimuth), std::sin(elevation), std::cos(elevation) * std::cos(azimuth)};
+
+    // 地面のリング。方位角の目安になる。
+    constexpr int kRingSegments = 72;
+    Projected previous = {{0.0f, 0.0f}, false};
+    for (int i = 0; i <= kRingSegments; ++i) {
+        const float t = (static_cast<float>(i) / kRingSegments) * 2.0f * 3.14159265f;
+        const Projected current = project({std::sin(t) * kRadius, 0.0f, std::cos(t) * kRadius});
+        if (i > 0 && previous.visible && current.visible) {
+            drawList->AddLine(previous.screen, current.screen, color(150, 160, 175, 130), 1.6f);
+        }
+        previous = current;
+    }
+
+    // 水平方向への投影と、そこから仰角ぶんの弧。
+    const Projected center = project({0.0f, 0.0f, 0.0f});
+    const Projected horizontalEnd = project({horizontal.x * kRadius, 0.0f, horizontal.z * kRadius});
+    if (center.visible && horizontalEnd.visible) {
+        drawList->AddLine(center.screen, horizontalEnd.screen, color(150, 160, 175, 170), 1.8f);
+    }
+    constexpr int kArcSegments = 32;
+    Projected previousArc = {{0.0f, 0.0f}, false};
+    for (int i = 0; i <= kArcSegments; ++i) {
+        const float angle = elevation * (static_cast<float>(i) / kArcSegments);
+        const float ring = std::cos(angle) * kRadius;
+        const Projected current = project({horizontal.x * ring, std::sin(angle) * kRadius, horizontal.z * ring});
+        if (i > 0 && previousArc.visible && current.visible) {
+            drawList->AddLine(previousArc.screen, current.screen, color(255, 206, 112, 150), 1.6f);
+        }
+        previousArc = current;
+    }
+
+    // 光が来る向きの矢印。ライトの位置から原点へ向ける。
+    const Projected arrowStart = project({direction.x * kRadius, direction.y * kRadius, direction.z * kRadius});
+    const Projected arrowEnd = project({direction.x * kRadius * 0.22f, direction.y * kRadius * 0.22f, direction.z * kRadius * 0.22f});
+    if (arrowStart.visible && arrowEnd.visible) {
+        const ImU32 lightColor = color(255, 188, 76, 245);
+        ImVec2 screenDir = {arrowEnd.screen.x - arrowStart.screen.x, arrowEnd.screen.y - arrowStart.screen.y};
+        const float length = std::sqrt(screenDir.x * screenDir.x + screenDir.y * screenDir.y);
+        if (length > 0.001f) {
+            screenDir.x /= length;
+            screenDir.y /= length;
+            const ImVec2 side = {-screenDir.y, screenDir.x};
+            const float head = ui::Scaled(14.0f);
+            const float halfWidth = ui::Scaled(6.0f);
+            const ImVec2 base = {arrowEnd.screen.x - screenDir.x * head, arrowEnd.screen.y - screenDir.y * head};
+            drawList->AddLine(arrowStart.screen, base, lightColor, ui::Scaled(3.5f));
+            drawList->AddTriangleFilled(arrowEnd.screen, {base.x + side.x * halfWidth, base.y + side.y * halfWidth},
+                                        {base.x - side.x * halfWidth, base.y - side.y * halfWidth}, lightColor);
+        }
+    }
+    if (center.visible) drawList->AddCircle(center.screen, ui::Scaled(5.0f), color(200, 210, 220, 200), 20, 1.6f);
+
+    // いまの値。掴んだまま数字を確かめられるようにする。
+    char text[96] = {};
+    std::snprintf(text, sizeof(text), ui::Tr("方位角 %.0f 度   仰角 %.0f 度", "Azimuth %.0f deg   Elevation %.0f deg"),
+                  azimuth * 180.0f / 3.14159265f, elevation * 180.0f / 3.14159265f);
+    const ImVec2 textMin = {areaMin.x + ui::Scaled(10.0f), areaMin.y + ui::Scaled(10.0f)};
+    const ImVec2 textSize = ImGui::CalcTextSize(text);
+    const ImVec2 padding = {ui::Scaled(8.0f), ui::Scaled(5.0f)};
+    drawList->AddRectFilled(textMin, {textMin.x + textSize.x + padding.x * 2.0f, textMin.y + textSize.y + padding.y * 2.0f},
+                            color(8, 10, 12, 190), ui::Scaled(4.0f));
+    drawList->AddText({textMin.x + padding.x, textMin.y + padding.y}, color(235, 235, 235, 255), text);
+
+    drawList->PopClipRect();
+}
+
 void Application::DrawView3dPanel() {
     if (m_focusDefaultTabs > 0) ImGui::SetNextWindowFocus();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -462,8 +596,8 @@ void Application::DrawView3dPanel() {
             ui::PropertyFloat(ui::Tr("ライトの強さ", "Light Intensity"), &settings.lightIntensity, 0.0f, 10.0f,
                               defaults.lightIntensity);
             ui::PropertyFloat(ui::Tr("ライトの向き", "Light Direction"), &settings.lightYaw, -3.14f, 3.14f, defaults.lightYaw,
-                              ui::Tr("ライトの水平方向の角度（ラジアン）。Shift + ドラッグでも回せる。",
-                                     "Horizontal light angle in radians. Shift + drag also rotates it."));
+                              ui::Tr("ライトの水平方向の角度（ラジアン）。3D ビューで L + ドラッグでも回せる。",
+                                     "Horizontal light angle in radians. L + drag in the 3D view also rotates it."));
             ui::PropertyFloat(ui::Tr("ライトの高さ", "Light Elevation"), &settings.lightPitch, 0.05f, 1.5f, defaults.lightPitch,
                               ui::Tr("ライトの仰角（ラジアン）。", "Light elevation in radians."));
             ui::PropertyFloat(ui::Tr("環境光", "Environment"), &settings.environmentIntensity, 0.0f, 4.0f,
@@ -491,10 +625,18 @@ void Application::DrawView3dPanel() {
             settings.panX = std::clamp(settings.panX - io.MouseDelta.x * unitsPerPixel, -10.0f, 10.0f);
             settings.panY = std::clamp(settings.panY + io.MouseDelta.y * unitsPerPixel, -10.0f, 10.0f);
         } else if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-            if (io.KeyShift) {
-                // Shift + ドラッグでライトを回す。
-                settings.lightYaw += io.MouseDelta.x * 0.01f;
-                settings.lightPitch = std::clamp(settings.lightPitch + io.MouseDelta.y * 0.01f, 0.05f, 1.5f);
+            const bool lightKey = ImGui::IsKeyDown(ImGuiKey_L) && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift;
+            if (lightKey || io.KeyShift) {
+                // L + ドラッグでライトを回す（terrain-graph と同じ。Shift + ドラッグも同じ動き）。
+                // 方位角は一周を -π〜π に折り返す（表示設定のスライダーの範囲に合わせる）。
+                float yaw = settings.lightYaw + io.MouseDelta.x * kLightRadiansPerPixel;
+                if (yaw > 3.14159265f) yaw -= 2.0f * 3.14159265f;
+                if (yaw < -3.14159265f) yaw += 2.0f * 3.14159265f;
+                settings.lightYaw = yaw;
+                // 上へ動かすとライトが高くなる。
+                settings.lightPitch = std::clamp(settings.lightPitch - io.MouseDelta.y * kLightRadiansPerPixel, 0.05f, 1.5f);
+                // ギズモは、掴んでいる間と離した直後だけ出す。
+                m_lightGizmoUntil = ImGui::GetTime() + kLightGizmoFadeSeconds;
             } else {
                 settings.yaw -= io.MouseDelta.x * 0.01f;
                 settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, -1.5f, 1.5f);
@@ -510,6 +652,7 @@ void Application::DrawView3dPanel() {
         } else {
             drawList->AddRectFilled(areaMin, areaMax, ImGui::GetColorU32(ImGuiCol_ChildBg));
         }
+        DrawPreviewLightGizmo(areaMin, areaMax);
     }
     ImGui::End();
 }

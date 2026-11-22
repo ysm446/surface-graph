@@ -43,11 +43,11 @@ PinRef DecodePin(ed::PinId id) {
     return pin;
 }
 
-// ピンの型ごとの色（Gray = 灰、Color = 黄、Value = 青）。グレー基調に合わせて彩度は抑える。
+// ピンの型ごとの色（Gray = 灰、Color = 水色、Value = 緑）。グレー基調に合わせて彩度は抑える。
 ImVec4 PinTypeColor(graph::PinType type) {
     switch (type) {
-        case graph::PinType::Color: return {0.86f, 0.74f, 0.36f, 1.0f};
-        case graph::PinType::Value: return {0.45f, 0.66f, 0.90f, 1.0f};
+        case graph::PinType::Color: return {0.45f, 0.78f, 0.95f, 1.0f};
+        case graph::PinType::Value: return {0.60f, 0.80f, 0.56f, 1.0f};
         default:                    return {0.72f, 0.72f, 0.72f, 1.0f};
     }
 }
@@ -176,7 +176,7 @@ void Application::DrawGraphNode(const graph::Node& node) {
     ed::PushStyleColor(ed::StyleColor_NodeBg, nodeBg);
     ed::PushStyleColor(ed::StyleColor_NodeBorder,
                        hasError ? ImGui::ColorConvertU32ToFloat4(ui::ErrorColor())
-                                : viewed ? ImVec4(0.72f, 0.76f, 0.62f, 1.0f) : ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+                                : viewed ? ImVec4(0.45f, 0.78f, 0.95f, 1.0f) : ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
 
     ed::BeginNode(ed::NodeId(node.id));
     ImGui::PushID(static_cast<int>(node.id));

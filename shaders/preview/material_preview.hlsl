@@ -222,9 +222,9 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float3 direction = normalize(gCameraForward + gCameraRight * (ndc.x * gTanHalfFov * aspect) -
                                        gCameraUp * (ndc.y * gTanHalfFov));
 
-    // 背景。空を出さないときは、中立のグレーの縦グラデーション。
+    // 背景。空を出さないときは、中立のグレーの単色。
     float3 background = ((gFlags & 1u) != 0u) ? Sky(direction, 0.15)
-                                              : lerp(float3(0.10, 0.10, 0.11), float3(0.035, 0.035, 0.04), ndc.y * 0.5 + 0.5);
+                                              : float3(0.06, 0.06, 0.065);
 
     Hit hit;
     if (gShape == 1u) hit = IntersectPlane(gCameraPosition, direction);

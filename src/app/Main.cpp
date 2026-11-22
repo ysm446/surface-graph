@@ -46,6 +46,8 @@ sg::StartupOptions ParseCommandLine() {
             options.uiScale = std::clamp(static_cast<float>(::_wtof(argv[++i])), 0.5f, 3.0f);
         } else if (argument == L"--preview-shape" && i + 1 < argc) {
             options.previewShape = (std::wstring(argv[++i]) == L"plane") ? 1 : 0;
+        } else if (argument == L"--show-light-gizmo") {
+            options.showLightGizmo = true;
         } else if (argument == L"--gpu-validation") {
             options.gpuValidation = true;
         } else if (!argument.empty() && argument[0] != L'-' && options.graphPath.empty()) {
