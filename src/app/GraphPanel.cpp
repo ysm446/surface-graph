@@ -257,9 +257,8 @@ void Application::DrawGraphNode(const graph::Node& node) {
             ImGui::Dummy({8.0f, rowHeight});
             const ImVec2 center = {nodeRightX, rowScreenY + rowHeight * 0.5f};
             ed::PinPivotRect(center, center);
-            bool linked = false;
-            for (const graph::Link& link : m_graph.links) linked = linked || (link.fromNode == node.id && link.fromPin == index);
-            drawCircle(center, PinTypeColor(type), linked);
+            // **どの出力を 2D ビューに出しているか**を丸の塗りで示す（terrain-graph と同じ）。
+            drawCircle(center, PinTypeColor(type), viewed && index == m_viewOutput);
             ed::PinRect({min.x, min.y}, {nodeRightX + radius * 2.0f, min.y + rowHeight});
             ed::EndPin();
         }
@@ -280,7 +279,12 @@ void Application::DrawGraphNode(const graph::Node& node) {
         for (; shift < 0; ++shift) resolution /= 2;
         resolution = std::clamp(resolution, 16u, graph::kMaxResolution);
         ImGui::Dummy({width, 4.0f});
-        ImGui::TextDisabled("%u × %u", resolution, resolution);
+        // 形式も添える。Gray は 1 チャンネル（L16F）、Color は 4 チャンネル（RGBA16F）。どちらも 16 bit 浮動小数。
+        const bool color = (m_graph.ResolveOutputType(node.id, 0) == graph::PinType::Color);
+        // 補助の情報なので、文字は一回り小さくする。
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.8f);
+        ImGui::TextDisabled("%u × %u  %s", resolution, resolution, color ? "RGBA16F" : "L16F");
+        ImGui::PopFont();
     }
 
     ImGui::PopID();
@@ -356,10 +360,6 @@ void Application::DrawAddNodePopup() {
             m_nodesToPlace.push_back(id);
             m_selectedNode = id;
             m_selectPending = true;
-            if (!m_viewPinned) {
-                m_viewNode = id;
-                m_viewOutput = 0;
-            }
         }
         ImGui::CloseCurrentPopup();
     }
@@ -549,22 +549,40 @@ void Application::DrawGraphPanel() {
         }
     }
 
-    // 選択。1 つだけ選んでいるときに、パラメータと 2D ビューの対象にする。
+    // 選択。1 つだけ選んでいるときに、パラメータの対象にする。**2D ビューの対象は変えない。**
     if (!m_selectPending) {
         const std::vector<uint64_t> selected = SelectedNodes();
         if (selected.size() == 1) {
-            if (m_selectedNode != selected.front()) {
-                m_selectedNode = selected.front();
-                if (!m_viewPinned) {
-                    m_viewNode = m_selectedNode;
-                    m_viewOutput = 0;
-                }
-            }
+            m_selectedNode = selected.front();
         } else if (selected.empty()) {
             m_selectedNode = 0;
         }
     }
-    // ダブルクリックしたノードは、ピン留めしていても 2D ビューに出す。
+
+    // 2D ビューの対象の切り替え。選択とは別にしてあるので、あるノードのパラメータをいじりながら、
+    // 別のノードの出力を見ていられる（terrain-graph と同じ作法）。
+    // 出力ピンは押した瞬間からリンクのドラッグが始まるので、**同じピンの上でほとんど動かずに
+    // 離したとき**だけクリックとみなす。
+    {
+        const uint64_t hoveredPin = static_cast<uint64_t>(ed::GetHoveredPin().Get());
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            m_pressedPin = hoveredPin;
+            m_pressedPinPos = ImGui::GetMousePos();
+        }
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            const ImVec2 released = ImGui::GetMousePos();
+            const float moved = std::abs(released.x - m_pressedPinPos.x) + std::abs(released.y - m_pressedPinPos.y);
+            if (m_pressedPin != 0 && hoveredPin == m_pressedPin && moved < 6.0f) {
+                const PinRef pin = DecodePin(ed::PinId(m_pressedPin));
+                if (pin.output && m_graph.FindNode(pin.node) != nullptr) {
+                    m_viewNode = pin.node;
+                    m_viewOutput = pin.index;
+                }
+            }
+            m_pressedPin = 0;
+        }
+    }
+    // ノードのダブルクリックでも切り替える（出力ピンを出していない Material Output や、ピンが小さいときの逃げ道）。
     if (const ed::NodeId doubleClicked = ed::GetDoubleClickedNode()) {
         m_viewNode = static_cast<uint64_t>(doubleClicked.Get());
         m_viewOutput = 0;

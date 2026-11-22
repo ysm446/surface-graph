@@ -460,7 +460,6 @@ void Application::ResetDocumentState() {
     m_selectedNode = 0;
     m_viewNode = 0;
     m_viewOutput = 0;
-    m_viewPinned = false;
     m_placeAllNodes = true;
     m_navigateCountdown = 3;
     m_device.WaitForGpu();

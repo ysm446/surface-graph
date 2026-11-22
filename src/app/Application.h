@@ -162,10 +162,12 @@ private:
     bool m_addNodeLinkIsOutput = false;
     bool m_selectPending = false;  // m_selectedNode をエディタの選択へ反映する
 
-    // 2D ビュー
+    // 2D ビュー。**表示の対象は選択とは別。** 出力ピンのクリック（かノードのダブルクリック）で切り替える。
     uint64_t m_viewNode = 0;
     int m_viewOutput = 0;
-    bool m_viewPinned = false;
+    // 出力ピンのクリックの判定用。押したピンと、押した位置。
+    uint64_t m_pressedPin = 0;
+    ImVec2 m_pressedPinPos = {0.0f, 0.0f};
     bool m_viewTile = false;
     int m_viewChannel = 0;  // 0 RGB / 1 R / 2 G / 3 B / 4 A
     float m_viewZoom = 1.0f;

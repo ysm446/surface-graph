@@ -317,14 +317,10 @@ void Application::DrawView2dPanel() {
             ImGui::TextDisabled("%u px", result->resolution);
         }
     } else {
-        ImGui::TextDisabled("%s", ui::Tr("ノードを選ぶと、その出力が出ます。", "Select a node to show its output."));
+        ImGui::TextDisabled("%s", ui::Tr("出力ピンをクリック（またはノードをダブルクリック）すると、その出力が出ます。",
+                                         "Click an output pin (or double-click a node) to show its output."));
     }
     ImGui::SameLine(0.0f, pad * 2.0f);
-    ImGui::Checkbox(ui::Tr("ピン留め", "Pin"), &m_viewPinned);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("%s", ui::Tr("別のノードを選んでも、いまのノードを出し続ける。", "Keeps showing this node when another node is selected."));
-    }
-    ImGui::SameLine();
     ImGui::Checkbox(ui::Tr("3×3 タイル", "3x3 Tile"), &m_viewTile);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::SetTooltip("%s", ui::Tr("繋ぎ目を確かめるために 3×3 に並べる。", "Repeats the image 3x3 to check the seams."));
