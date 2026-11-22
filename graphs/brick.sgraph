@@ -1,0 +1,803 @@
+{
+  "format": "surface-graph",
+  "version": 1,
+  "name": "brick",
+  "resolution": 2048,
+  "seed": 0,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "pattern.brick",
+      "pos": [
+        0,
+        0
+      ],
+      "params": {
+        "columns": 4,
+        "rows": 8,
+        "offset": 0.5,
+        "gap": 0.08,
+        "bevel": 0.18,
+        "luminanceRandom": 0.25
+      }
+    },
+    {
+      "id": 2,
+      "type": "noise.perlin",
+      "pos": [
+        0,
+        260
+      ],
+      "params": {
+        "scale": 6,
+        "octaves": 4
+      },
+      "seedOffset": 1
+    },
+    {
+      "id": 3,
+      "type": "noise.perlin",
+      "pos": [
+        0,
+        520
+      ],
+      "params": {
+        "scale": 16,
+        "octaves": 6,
+        "gain": 0.6
+      },
+      "seedOffset": 2
+    },
+    {
+      "id": 4,
+      "type": "noise.worley",
+      "pos": [
+        0,
+        780
+      ],
+      "params": {
+        "scale": 24,
+        "mode": 0
+      },
+      "seedOffset": 3
+    },
+    {
+      "id": 5,
+      "type": "noise.perlin",
+      "pos": [
+        0,
+        1040
+      ],
+      "params": {
+        "scale": 3,
+        "octaves": 6,
+        "gain": 0.6
+      },
+      "seedOffset": 4
+    },
+    {
+      "id": 6,
+      "type": "filter.warp",
+      "pos": [
+        320,
+        0
+      ],
+      "params": {
+        "intensity": 0.012
+      }
+    },
+    {
+      "id": 7,
+      "type": "filter.warp",
+      "pos": [
+        320,
+        260
+      ],
+      "params": {
+        "intensity": 0.012
+      }
+    },
+    {
+      "id": 8,
+      "type": "filter.slope_blur",
+      "pos": [
+        320,
+        520
+      ],
+      "params": {
+        "intensity": 0.02,
+        "samples": 12,
+        "mode": 1
+      }
+    },
+    {
+      "id": 9,
+      "type": "blend.blend",
+      "pos": [
+        640,
+        0
+      ],
+      "params": {
+        "mode": 3,
+        "opacity": 0.25
+      }
+    },
+    {
+      "id": 10,
+      "type": "adjust.histogram_scan",
+      "pos": [
+        640,
+        260
+      ],
+      "params": {
+        "position": 0.12,
+        "contrast": 0.7
+      }
+    },
+    {
+      "id": 11,
+      "type": "blend.blend",
+      "pos": [
+        640,
+        520
+      ],
+      "params": {
+        "mode": 2,
+        "opacity": 0.12
+      }
+    },
+    {
+      "id": 12,
+      "type": "adjust.levels",
+      "pos": [
+        640,
+        780
+      ],
+      "params": {
+        "inLow": 0.0,
+        "inHigh": 1.0,
+        "gamma": 1.0
+      }
+    },
+    {
+      "id": 13,
+      "type": "adjust.histogram_scan",
+      "pos": [
+        640,
+        1040
+      ],
+      "params": {
+        "position": 0.75,
+        "contrast": 0.85
+      }
+    },
+    {
+      "id": 14,
+      "type": "derive.normal",
+      "pos": [
+        960,
+        0
+      ],
+      "params": {
+        "intensity": 0.035,
+        "format": 0
+      }
+    },
+    {
+      "id": 15,
+      "type": "derive.ao",
+      "pos": [
+        960,
+        260
+      ],
+      "params": {
+        "heightScale": 0.06,
+        "radius": 0.03
+      }
+    },
+    {
+      "id": 16,
+      "type": "derive.curvature",
+      "pos": [
+        960,
+        520
+      ],
+      "params": {
+        "intensity": 1.5,
+        "width": 0.002
+      }
+    },
+    {
+      "id": 17,
+      "type": "adjust.histogram_scan",
+      "pos": [
+        960,
+        780
+      ],
+      "params": {
+        "position": 0.38,
+        "contrast": 0.8
+      }
+    },
+    {
+      "id": 18,
+      "type": "adjust.levels",
+      "pos": [
+        960,
+        1040
+      ],
+      "params": {
+        "inLow": 0.5,
+        "inHigh": 0.9
+      }
+    },
+    {
+      "id": 19,
+      "type": "blend.blend",
+      "pos": [
+        1280,
+        0
+      ],
+      "params": {
+        "mode": 0,
+        "opacity": 0.35
+      }
+    },
+    {
+      "id": 20,
+      "type": "color.gradient_map",
+      "pos": [
+        1280,
+        260
+      ],
+      "params": {
+        "gradient": [
+          {
+            "pos": 0.0,
+            "color": [
+              0.33,
+              0.12,
+              0.08,
+              1.0
+            ]
+          },
+          {
+            "pos": 0.45,
+            "color": [
+              0.55,
+              0.21,
+              0.13,
+              1.0
+            ]
+          },
+          {
+            "pos": 0.8,
+            "color": [
+              0.66,
+              0.32,
+              0.2,
+              1.0
+            ]
+          },
+          {
+            "pos": 1.0,
+            "color": [
+              0.74,
+              0.45,
+              0.3,
+              1.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 21,
+      "type": "color.gradient_map",
+      "pos": [
+        1280,
+        520
+      ],
+      "params": {
+        "gradient": [
+          {
+            "pos": 0.0,
+            "color": [
+              0.42,
+              0.4,
+              0.36,
+              1.0
+            ]
+          },
+          {
+            "pos": 1.0,
+            "color": [
+              0.66,
+              0.63,
+              0.57,
+              1.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 22,
+      "type": "blend.blend",
+      "pos": [
+        1600,
+        0
+      ],
+      "params": {
+        "mode": 0,
+        "opacity": 1.0
+      }
+    },
+    {
+      "id": 23,
+      "type": "shape.uniform_color",
+      "pos": [
+        1600,
+        260
+      ],
+      "params": {
+        "color": [
+          0.8,
+          0.62,
+          0.5,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 24,
+      "type": "blend.blend",
+      "pos": [
+        1600,
+        520
+      ],
+      "params": {
+        "mode": 0,
+        "opacity": 0.45
+      }
+    },
+    {
+      "id": 25,
+      "type": "blend.blend",
+      "pos": [
+        1600,
+        780
+      ],
+      "params": {
+        "mode": 3,
+        "opacity": 1.0
+      }
+    },
+    {
+      "id": 26,
+      "type": "adjust.invert",
+      "pos": [
+        1600,
+        1040
+      ],
+      "params": {}
+    },
+    {
+      "id": 27,
+      "type": "shape.uniform_color",
+      "pos": [
+        1600,
+        1300
+      ],
+      "params": {
+        "color": [
+          0.16,
+          0.13,
+          0.11,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 28,
+      "type": "blend.blend",
+      "pos": [
+        1920,
+        0
+      ],
+      "params": {
+        "mode": 0,
+        "opacity": 0.6
+      }
+    },
+    {
+      "id": 29,
+      "type": "adjust.histogram_range",
+      "pos": [
+        1920,
+        260
+      ],
+      "params": {
+        "range": 0.25,
+        "position": 0.9
+      }
+    },
+    {
+      "id": 30,
+      "type": "shape.uniform_color",
+      "pos": [
+        1920,
+        520
+      ],
+      "params": {
+        "color": [
+          0.55,
+          0.55,
+          0.55,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 31,
+      "type": "blend.blend",
+      "pos": [
+        1920,
+        780
+      ],
+      "params": {
+        "mode": 0,
+        "opacity": 0.6
+      }
+    },
+    {
+      "id": 32,
+      "type": "shape.uniform_color",
+      "pos": [
+        1920,
+        1040
+      ],
+      "params": {
+        "color": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 33,
+      "type": "io.output",
+      "pos": [
+        2240,
+        0
+      ],
+      "params": {
+        "usage": 0
+      }
+    },
+    {
+      "id": 34,
+      "type": "io.output",
+      "pos": [
+        2240,
+        260
+      ],
+      "params": {
+        "usage": 1
+      }
+    },
+    {
+      "id": 35,
+      "type": "io.output",
+      "pos": [
+        2240,
+        520
+      ],
+      "params": {
+        "usage": 2
+      }
+    },
+    {
+      "id": 36,
+      "type": "io.output",
+      "pos": [
+        2240,
+        780
+      ],
+      "params": {
+        "usage": 3
+      }
+    },
+    {
+      "id": 37,
+      "type": "io.output",
+      "pos": [
+        2240,
+        1040
+      ],
+      "params": {
+        "usage": 4
+      }
+    },
+    {
+      "id": 38,
+      "type": "io.output",
+      "pos": [
+        2240,
+        1300
+      ],
+      "params": {
+        "usage": 5
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": 1,
+      "fromPin": "Out",
+      "to": 6,
+      "toPin": "In"
+    },
+    {
+      "from": 2,
+      "fromPin": "Out",
+      "to": 6,
+      "toPin": "Gradient"
+    },
+    {
+      "from": 1,
+      "fromPin": "Random",
+      "to": 7,
+      "toPin": "In"
+    },
+    {
+      "from": 2,
+      "fromPin": "Out",
+      "to": 7,
+      "toPin": "Gradient"
+    },
+    {
+      "from": 6,
+      "fromPin": "Out",
+      "to": 8,
+      "toPin": "In"
+    },
+    {
+      "from": 3,
+      "fromPin": "Out",
+      "to": 8,
+      "toPin": "Slope"
+    },
+    {
+      "from": 3,
+      "fromPin": "Out",
+      "to": 9,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 8,
+      "fromPin": "Out",
+      "to": 9,
+      "toPin": "Background"
+    },
+    {
+      "from": 4,
+      "fromPin": "Out",
+      "to": 10,
+      "toPin": "In"
+    },
+    {
+      "from": 10,
+      "fromPin": "Out",
+      "to": 11,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 9,
+      "fromPin": "Out",
+      "to": 11,
+      "toPin": "Background"
+    },
+    {
+      "from": 11,
+      "fromPin": "Out",
+      "to": 12,
+      "toPin": "In"
+    },
+    {
+      "from": 8,
+      "fromPin": "Out",
+      "to": 13,
+      "toPin": "In"
+    },
+    {
+      "from": 12,
+      "fromPin": "Out",
+      "to": 14,
+      "toPin": "In"
+    },
+    {
+      "from": 12,
+      "fromPin": "Out",
+      "to": 15,
+      "toPin": "In"
+    },
+    {
+      "from": 14,
+      "fromPin": "Out",
+      "to": 16,
+      "toPin": "In"
+    },
+    {
+      "from": 16,
+      "fromPin": "Out",
+      "to": 17,
+      "toPin": "In"
+    },
+    {
+      "from": 15,
+      "fromPin": "Out",
+      "to": 18,
+      "toPin": "In"
+    },
+    {
+      "from": 3,
+      "fromPin": "Out",
+      "to": 19,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 7,
+      "fromPin": "Out",
+      "to": 19,
+      "toPin": "Background"
+    },
+    {
+      "from": 19,
+      "fromPin": "Out",
+      "to": 20,
+      "toPin": "In"
+    },
+    {
+      "from": 3,
+      "fromPin": "Out",
+      "to": 21,
+      "toPin": "In"
+    },
+    {
+      "from": 20,
+      "fromPin": "Out",
+      "to": 22,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 21,
+      "fromPin": "Out",
+      "to": 22,
+      "toPin": "Background"
+    },
+    {
+      "from": 13,
+      "fromPin": "Out",
+      "to": 22,
+      "toPin": "Mask"
+    },
+    {
+      "from": 23,
+      "fromPin": "Out",
+      "to": 24,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 22,
+      "fromPin": "Out",
+      "to": 24,
+      "toPin": "Background"
+    },
+    {
+      "from": 17,
+      "fromPin": "Out",
+      "to": 24,
+      "toPin": "Mask"
+    },
+    {
+      "from": 5,
+      "fromPin": "Out",
+      "to": 25,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 18,
+      "fromPin": "Out",
+      "to": 25,
+      "toPin": "Background"
+    },
+    {
+      "from": 25,
+      "fromPin": "Out",
+      "to": 26,
+      "toPin": "In"
+    },
+    {
+      "from": 27,
+      "fromPin": "Out",
+      "to": 28,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 24,
+      "fromPin": "Out",
+      "to": 28,
+      "toPin": "Background"
+    },
+    {
+      "from": 26,
+      "fromPin": "Out",
+      "to": 28,
+      "toPin": "Mask"
+    },
+    {
+      "from": 3,
+      "fromPin": "Out",
+      "to": 29,
+      "toPin": "In"
+    },
+    {
+      "from": 30,
+      "fromPin": "Out",
+      "to": 31,
+      "toPin": "Foreground"
+    },
+    {
+      "from": 29,
+      "fromPin": "Out",
+      "to": 31,
+      "toPin": "Background"
+    },
+    {
+      "from": 17,
+      "fromPin": "Out",
+      "to": 31,
+      "toPin": "Mask"
+    },
+    {
+      "from": 28,
+      "fromPin": "Out",
+      "to": 33,
+      "toPin": "In"
+    },
+    {
+      "from": 14,
+      "fromPin": "Out",
+      "to": 34,
+      "toPin": "In"
+    },
+    {
+      "from": 31,
+      "fromPin": "Out",
+      "to": 35,
+      "toPin": "In"
+    },
+    {
+      "from": 32,
+      "fromPin": "Out",
+      "to": 36,
+      "toPin": "In"
+    },
+    {
+      "from": 12,
+      "fromPin": "Out",
+      "to": 37,
+      "toPin": "In"
+    },
+    {
+      "from": 15,
+      "fromPin": "Out",
+      "to": 38,
+      "toPin": "In"
+    }
+  ],
+  "exposedParams": []
+}

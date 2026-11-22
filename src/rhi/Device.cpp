@@ -1,0 +1,938 @@
+#include "rhi/Device.h"
+
+#include "core/ImageIo.h"
+
+#include "core/Log.h"
+#include "ui/Localization.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include <pix3.h>
+
+#include <utility>
+
+namespace sg::rhi {
+namespace {
+
+// **シェーダから触るものは全部ここへ並ぶ**（読み込んだ素材、合成の中間テクスチャ、
+// マスク、サムネイル、環境マップ、ImGui のフォント）。素材 1 枚でも
+// 本体 + sRGB + チャンネル別の 4 本を使うので、1024 では素材を並べただけで届く。
+// ディスクリプタは 1 枠 32 バイト程度（8192 枠で 256KB ほど）、上限は
+// Tier 1 でも 100 万枠なので、ここは余裕を持たせるほうが安い。
+constexpr uint32_t kSrvHeapCapacity = 8192;
+// RTV はマテリアルのサムネイルが 1 枚ずつ持ち続けるので、マテリアルの数だけ要る。
+// 64 では植生のマテリアルを足しただけで尽き、その後の描画先が作れず地形が出なくなった。
+constexpr uint32_t kRtvHeapCapacity = 1024;
+constexpr uint32_t kDsvHeapCapacity = 64;
+
+// 1 フレームあたりのアップロード容量。定数バッファと小さめの転送を想定した初期値。
+constexpr uint64_t kUploadBytesPerFrame = 16ull * 1024 * 1024;
+
+}  // namespace
+
+Device::~Device() {
+    Shutdown();
+}
+
+bool Device::Initialize(HWND hwnd, uint32_t width, uint32_t height, bool enableDebugLayer, bool gpuValidation) {
+    m_width = width;
+    m_height = height;
+
+    if (!CreateFactoryAndDevice(enableDebugLayer, gpuValidation)) {
+        return false;
+    }
+    if (!CreateCommandObjects()) {
+        return false;
+    }
+    // hwnd が null ならヘッドレス（CLI）。スワップチェーンを作らず、ExecuteImmediate だけを使う。
+    m_headless = (hwnd == nullptr);
+    if (!m_headless && !CreateSwapChain(hwnd, width, height)) {
+        return false;
+    }
+    if (!m_rtvHeap.Create(m_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvHeapCapacity,
+                          false)) {
+        return false;
+    }
+    if (!m_dsvHeap.Create(m_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvHeapCapacity,
+                          false)) {
+        return false;
+    }
+    if (!m_srvHeap.Create(m_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                          kSrvHeapCapacity, true)) {
+        return false;
+    }
+    if (!m_headless && !CreateBackBufferViews()) {
+        return false;
+    }
+    if (!m_allocator.Create(m_device.Get(), m_adapter.Get(), &m_srvHeap, &m_rtvHeap, &m_dsvHeap)) {
+        return false;
+    }
+    if (!m_uploadRing.Create(m_allocator, kUploadBytesPerFrame)) {
+        return false;
+    }
+    if (!CreateFrameTiming()) {
+        return false;
+    }
+
+    m_initialized = true;
+    return true;
+}
+
+void Device::Defer(ComPtr<IUnknown> object) {
+    // 現在記録中のフレームは m_nextFenceValue で Signal される。
+    m_deletionQueue.Push(std::move(object), m_nextFenceValue);
+}
+
+void Device::SetAuxiliaryFence(ID3D12Fence* fence, uint64_t value) {
+    if (fence == nullptr) {
+        return;
+    }
+    PruneAuxiliaryFences();
+    const auto it = std::find_if(
+        m_auxiliaryFences.begin(), m_auxiliaryFences.end(),
+        [fence](const AuxiliaryFence& aux) { return aux.fence.Get() == fence; });
+    if (it != m_auxiliaryFences.end()) {
+        it->value = std::max(it->value, value);
+    } else {
+        m_auxiliaryFences.push_back(AuxiliaryFence{fence, value});
+    }
+    m_deletionQueue.SetAuxiliaryFence(fence, value);
+}
+
+void Device::PruneAuxiliaryFences() {
+    std::erase_if(m_auxiliaryFences, [](const AuxiliaryFence& aux) {
+        return aux.fence->GetCompletedValue() >= aux.value;
+    });
+}
+
+void Device::RequestBackBufferCapture(const std::filesystem::path& path,
+                                      CaptureCallback onComplete) {
+    m_capturePath = path;
+    m_captureCallback = std::move(onComplete);
+}
+
+// 撮影の後始末。成否を呼び出し側へ伝えてから、保留していた状態を捨てる。
+void Device::FinishCapture(bool success) {
+    const CaptureCallback callback = std::move(m_captureCallback);
+    const std::filesystem::path path = m_capturePath;
+    m_captureCallback = {};
+    m_capturePath.clear();
+    m_pendingCapture = GpuBuffer{};
+    if (callback) {
+        callback(success, path, m_width, m_height);
+    }
+}
+
+void Device::DeferFree(DescriptorHeap& heap, const DescriptorHandle& handle) {
+    m_deletionQueue.Push(&heap, handle, m_nextFenceValue);
+}
+
+// ミップごとの UAV / SRV だけを返す。**ミップ連鎖を作り終えたら呼ぶ。**
+// これらはミップを作る間しか使わないのに、テクスチャ 1 枚で
+// ミップ数 × 2 枠（2K で 24 枠）を占め続ける。SRV ヒープの枠は有限なので、
+// 用が済んだら返さないと素材を並べただけで枯渇する。
+void Device::DeferFreeMipViews(GpuTexture& texture) {
+    // uav は mipUavs[0] と同じハンドルなので、返したあとは一緒に落とす
+    // （残すと解放済みのディスクリプタを指したままになる）。
+    for (const DescriptorHandle& handle : texture.mipUavs) {
+        DeferFree(m_srvHeap, handle);
+    }
+    for (const DescriptorHandle& handle : texture.mipSrvs) {
+        DeferFree(m_srvHeap, handle);
+    }
+    texture.mipUavs.clear();
+    texture.mipSrvs.clear();
+    texture.uav = DescriptorHandle{};
+}
+
+void Device::DeferRelease(GpuTexture& texture) {
+    texture.ForEachDescriptor([&](GpuTexture::DescriptorHeapKind kind,
+                                  const DescriptorHandle& handle) {
+        switch (kind) {
+            case GpuTexture::DescriptorHeapKind::Srv: DeferFree(m_srvHeap, handle); break;
+            case GpuTexture::DescriptorHeapKind::Rtv: DeferFree(m_rtvHeap, handle); break;
+            case GpuTexture::DescriptorHeapKind::Dsv: DeferFree(m_dsvHeap, handle); break;
+        }
+    });
+    Defer(texture.resource);
+    Defer(texture.allocation);
+    texture = GpuTexture{};
+}
+
+void Device::DeferRelease(GpuBuffer& buffer) {
+    DeferFree(m_srvHeap, buffer.srv);
+    DeferFree(m_srvHeap, buffer.uav);
+    Defer(buffer.resource);
+    Defer(buffer.allocation);
+    buffer = GpuBuffer{};
+}
+
+Device::VideoMemory Device::QueryVideoMemory() const {
+    VideoMemory result;
+
+    // D3D12MA の Budget は、内部で QueryVideoMemoryInfo を呼んだプロセス全体の値と、
+    // アロケータ自身の統計をまとめて返す。両方をここで一度に受け取る。
+    if (D3D12MA::Allocator* allocator = m_allocator.Raw(); allocator != nullptr) {
+        D3D12MA::Budget local = {};
+        allocator->GetBudget(&local, nullptr);
+        result.usage = local.UsageBytes;
+        result.budget = local.BudgetBytes;
+        result.allocated = local.Stats.AllocationBytes;
+        result.reserved = local.Stats.BlockBytes;
+        return result;
+    }
+
+    // アロケータがまだ無い場合でも、プロセス全体の値だけは取れる。
+    if (m_adapter) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+        if (SUCCEEDED(m_adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+            result.usage = info.CurrentUsage;
+            result.budget = info.Budget;
+        }
+    }
+    return result;
+}
+
+uint64_t Device::CompletedFenceValue() const {
+    return m_fence ? m_fence->GetCompletedValue() : 0;
+}
+
+bool Device::CreateFactoryAndDevice(bool enableDebugLayer, bool gpuValidation) {
+    UINT factoryFlags = 0;
+
+    if (enableDebugLayer) {
+        ComPtr<ID3D12Debug> debug;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+            debug->EnableDebugLayer();
+            SG_LOG_INFO(ui::Tr("D3D12 デバッグレイヤーを有効化しました", "D3D12 debug layer enabled"));
+
+            // GPU ベースバリデーションは既定で切る。地形評価や雲の Dispatch に
+            // 検証コードが入って最初のフレームが数分経っても終わらない。
+            ComPtr<ID3D12Debug1> debug1;
+            if (gpuValidation && SUCCEEDED(debug.As(&debug1))) {
+                debug1->SetEnableGPUBasedValidation(TRUE);
+                SG_LOG_INFO(ui::Tr("GPU ベースバリデーションを有効化しました", "GPU-based validation enabled"));
+            }
+            factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+        } else {
+            SG_LOG_WARN(ui::Tr("D3D12 デバッグレイヤーを取得できませんでした（Graphics Tools 未導入の可能性）", "Could not get the D3D12 debug layer (Graphics Tools may not be installed)"));
+        }
+    }
+
+    if (!SG_CHECK_HR(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&m_factory)))) {
+        return false;
+    }
+
+    BOOL allowTearing = FALSE;
+    if (SUCCEEDED(m_factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                                                 &allowTearing, sizeof(allowTearing)))) {
+        m_allowTearing = (allowTearing == TRUE);
+    }
+
+    // DRED（Device Removed Extended Data）。GPU が落ちたとき（TDR・ページフォールト）に、直前に実行していた
+    // 命令の履歴と PIX マーカーの名前、触れたメモリを残す。デバッグレイヤーが無くても使える。
+    // たまにしか起きないデバイスロストの原因を、Release の手元の実行でも追えるようにするため常に有効にする。
+    {
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dred;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred)))) {
+            dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred1;
+            if (SUCCEEDED(dred.As(&dred1))) dred1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        }
+    }
+
+    // 高性能アダプタから順に、D3D12 デバイスを作れるものを選ぶ。
+    for (UINT i = 0;; ++i) {
+        ComPtr<IDXGIAdapter4> adapter;
+        if (m_factory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                  IID_PPV_ARGS(&adapter)) == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+
+        DXGI_ADAPTER_DESC3 desc = {};
+        adapter->GetDesc3(&desc);
+        if ((desc.Flags & DXGI_ADAPTER_FLAG3_SOFTWARE) != 0) {
+            continue;
+        }
+
+        if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0,
+                                        IID_PPV_ARGS(&m_device)))) {
+            m_adapter = adapter;
+            SG_LOG_INFO(ui::Tr("アダプタ: %ls (VRAM %llu MB)", "Adapter: %ls (VRAM %llu MB)"), desc.Description,
+                        static_cast<unsigned long long>(desc.DedicatedVideoMemory / (1024 * 1024)));
+            break;
+        }
+    }
+
+    if (!m_device) {
+        SG_LOG_ERROR(ui::Tr("D3D12 デバイスを作成できるアダプタが見つかりませんでした", "No adapter can create a D3D12 device"));
+        return false;
+    }
+
+    // シェーダモデル 6.6 を要求する（bindless / 合成シェーダの前提）。
+    D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = {D3D_SHADER_MODEL_6_6};
+    if (FAILED(m_device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel,
+                                             sizeof(shaderModel))) ||
+        shaderModel.HighestShaderModel < D3D_SHADER_MODEL_6_6) {
+        SG_LOG_ERROR(ui::Tr("シェーダモデル 6.6 に対応していません", "Shader model 6.6 is not supported"));
+        return false;
+    }
+
+    // bindless（ResourceDescriptorHeap）は Resource Binding Tier 3 を前提とする。
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+    if (FAILED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
+                                             sizeof(options))) ||
+        options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_3) {
+        SG_LOG_ERROR(ui::Tr("Resource Binding Tier 3 に対応していません（bindless に必要）", "Resource Binding Tier 3 is not supported (required for bindless)"));
+        return false;
+    }
+
+    // 合成パスは R11G11B10F / RG16F / RGBA8 / R8 の UAV を読み書きする。
+    // 無条件で保証される typed UAV load は R32 系のみなので、追加フォーマット対応を必須とする。
+    if (!options.TypedUAVLoadAdditionalFormats) {
+        SG_LOG_ERROR(ui::Tr("Typed UAV Load の追加フォーマットに対応していません（合成パスに必要）", "Typed UAV Load additional formats are not supported (required for compositing)"));
+        return false;
+    }
+
+    // デバッガ未接続で SetBreakOnSeverity を有効にすると、警告のたびにプロセスが落ちる。
+    // デバッガ接続時のみ break させ、それ以外はメッセージの出力に留める。
+    if (enableDebugLayer && SUCCEEDED(m_device.As(&m_infoQueue))) {
+        // デバッガ未接続で break させるとプロセスごと落ちる。繋がっているときだけ。
+        if (::IsDebuggerPresent()) {
+            m_infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+            m_infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+            m_infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+        }
+    }
+    return true;
+}
+
+// デバッグレイヤーのメッセージをログへ流す。
+//
+// 溜めたままにすると上限で古いものが捨てられるので、汲んだら消す。
+void Device::DrainDebugMessages() {
+    if (m_infoQueue == nullptr) {
+        return;
+    }
+
+    const UINT64 count = m_infoQueue->GetNumStoredMessages();
+    // D3D12_MESSAGE として読むため、最大アライメントの要素で確保する。
+    std::vector<std::max_align_t> buffer;
+    for (UINT64 i = 0; i < count; ++i) {
+        SIZE_T length = 0;
+        if (FAILED(m_infoQueue->GetMessage(i, nullptr, &length)) || length == 0) {
+            continue;
+        }
+        buffer.resize((length + sizeof(std::max_align_t) - 1) / sizeof(std::max_align_t));
+        auto* message = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
+        if (FAILED(m_infoQueue->GetMessage(i, message, &length))) {
+            continue;
+        }
+
+        switch (message->Severity) {
+            case D3D12_MESSAGE_SEVERITY_CORRUPTION:
+            case D3D12_MESSAGE_SEVERITY_ERROR:
+                SG_LOG_ERROR("D3D12: %s", message->pDescription);
+                break;
+            case D3D12_MESSAGE_SEVERITY_WARNING:
+                SG_LOG_WARN("D3D12: %s", message->pDescription);
+                break;
+            default:
+                // INFO と MESSAGE は数が多く、内容も定型なので出さない。
+                break;
+        }
+    }
+    m_infoQueue->ClearStoredMessages();
+}
+
+bool Device::CreateCommandObjects() {
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    if (!SG_CHECK_HR(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)))) {
+        return false;
+    }
+    m_commandQueue->SetName(L"MainDirectQueue");
+
+    for (uint32_t i = 0; i < kFrameCount; ++i) {
+        if (!SG_CHECK_HR(m_device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocators[i])))) {
+            return false;
+        }
+    }
+
+    if (!SG_CHECK_HR(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 m_commandAllocators[0].Get(), nullptr,
+                                                 IID_PPV_ARGS(&m_commandList)))) {
+        return false;
+    }
+    // 作成直後は開いた状態なので閉じておく。
+    if (!SG_CHECK_HR(m_commandList->Close())) {
+        return false;
+    }
+
+    if (!SG_CHECK_HR(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      IID_PPV_ARGS(&m_immediateAllocator)))) {
+        return false;
+    }
+    if (!SG_CHECK_HR(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 m_immediateAllocator.Get(), nullptr,
+                                                 IID_PPV_ARGS(&m_immediateCommandList)))) {
+        return false;
+    }
+    if (!SG_CHECK_HR(m_immediateCommandList->Close())) {
+        return false;
+    }
+
+    if (!SG_CHECK_HR(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)))) {
+        return false;
+    }
+
+    m_fenceEvent = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (m_fenceEvent == nullptr) {
+        SG_LOG_ERROR(ui::Tr("フェンス用イベントの作成に失敗しました", "Failed to create the fence event"));
+        return false;
+    }
+    return true;
+}
+
+bool Device::CreateFrameTiming() {
+    if (!SG_CHECK_HR(m_commandQueue->GetTimestampFrequency(&m_timestampFrequency)) ||
+        m_timestampFrequency == 0) {
+        return false;
+    }
+    D3D12_QUERY_HEAP_DESC desc = {};
+    desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    desc.Count = kFrameCount * 2;
+    if (!SG_CHECK_HR(m_device->CreateQueryHeap(&desc, IID_PPV_ARGS(&m_frameTimestampHeap)))) {
+        return false;
+    }
+    m_frameTimestampHeap->SetName(L"FrameTimestamps");
+    // READBACK は COPY_DEST 固定。スロットごとに開始・終了の 2 値を置く。
+    if (!m_allocator.CreateReadbackBuffer(sizeof(uint64_t) * desc.Count,
+                                          L"FrameTimestampReadback", m_frameTimestampReadback)) {
+        return false;
+    }
+    // 毎フレーム Map / Unmap しない。読むのは ReadFrameTiming でフェンス待ちのあとだけ。
+    void* mapped = nullptr;
+    const D3D12_RANGE readRange = {0, 0};
+    if (!SG_CHECK_HR(m_frameTimestampReadback.resource->Map(0, &readRange, &mapped))) {
+        m_frameTimestampReadback = GpuBuffer{};
+        return false;
+    }
+    m_frameTimestampMapped = static_cast<const uint64_t*>(mapped);
+    return true;
+}
+
+void Device::ReadFrameTiming() {
+    if (!m_frameTimestampPending[m_frameIndex] || m_frameTimestampMapped == nullptr) return;
+    m_frameTimestampPending[m_frameIndex] = false;
+    const uint64_t* timestamps = m_frameTimestampMapped + 2 * m_frameIndex;
+    if (timestamps[1] >= timestamps[0]) {
+        const double milliseconds = static_cast<double>(timestamps[1] - timestamps[0]) *
+                                    1000.0 / static_cast<double>(m_timestampFrequency);
+        // 完了フレームの実測値を平滑化し、表示の細かな揺れを抑える。
+        m_gpuFrameMilliseconds = m_gpuFrameMilliseconds < 0.0 ? milliseconds :
+                                 m_gpuFrameMilliseconds * 0.9 + milliseconds * 0.1;
+    }
+}
+
+bool Device::CreateSwapChain(HWND hwnd, uint32_t width, uint32_t height) {
+    DXGI_SWAP_CHAIN_DESC1 desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.Format = kBackBufferFormat;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = kFrameCount;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+    desc.Flags = m_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+
+    ComPtr<IDXGISwapChain1> swapChain1;
+    if (!SG_CHECK_HR(m_factory->CreateSwapChainForHwnd(m_commandQueue.Get(), hwnd, &desc, nullptr,
+                                                       nullptr, &swapChain1))) {
+        return false;
+    }
+    // Alt+Enter による自動フルスクリーン切り替えは使わない。
+    if (!SG_CHECK_HR(m_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER))) {
+        return false;
+    }
+    if (!SG_CHECK_HR(swapChain1.As(&m_swapChain))) {
+        return false;
+    }
+    m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+    return true;
+}
+
+bool Device::CreateBackBufferViews() {
+    for (uint32_t i = 0; i < kFrameCount; ++i) {
+        if (!SG_CHECK_HR(m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])))) {
+            return false;
+        }
+        wchar_t name[32] = {};
+        ::swprintf_s(name, L"BackBuffer%u", i);
+        m_backBuffers[i]->SetName(name);
+
+        if (!m_backBufferRtvs[i].IsValid()) {
+            m_backBufferRtvs[i] = m_rtvHeap.Allocate();
+            if (!m_backBufferRtvs[i].IsValid()) {
+                return false;
+            }
+        }
+        m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, m_backBufferRtvs[i].cpu);
+    }
+    return true;
+}
+
+void Device::ReleaseBackBuffers() {
+    for (auto& buffer : m_backBuffers) {
+        buffer.Reset();
+    }
+}
+
+void Device::Resize(uint32_t width, uint32_t height) {
+    if (!m_initialized || width == 0 || height == 0) {
+        return;
+    }
+    if (width == m_width && height == m_height) {
+        return;
+    }
+
+    WaitForGpu();
+    ReleaseBackBuffers();
+
+    const UINT flags = m_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    if (!SG_CHECK_HR(m_swapChain->ResizeBuffers(kFrameCount, width, height, kBackBufferFormat,
+                                                flags))) {
+        // バックバッファは既に手放しているため、続行すると null 参照になる。
+        // デバイスロスト相当として描画を止める。
+        SG_LOG_ERROR(ui::Tr("スワップチェーンのリサイズに失敗しました。描画を停止します", "Failed to resize the swap chain. Stopping rendering"));
+        m_initialized = false;
+        return;
+    }
+
+    m_width = width;
+    m_height = height;
+    m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+    if (!CreateBackBufferViews()) {
+        SG_LOG_ERROR(ui::Tr("バックバッファビューの再作成に失敗しました。描画を停止します", "Failed to recreate the back buffer views. Stopping rendering"));
+        m_initialized = false;
+    }
+}
+
+ID3D12GraphicsCommandList* Device::BeginFrame(const float clearColor[4]) {
+    if (!m_initialized || m_frameOpen || CheckDeviceRemoved()) {
+        return nullptr;
+    }
+
+    // このフレームスロットが前回投入した処理の完了を待つ。
+    // m_fenceValues[i] == 0 は未使用スロットなので待たない。
+    const uint64_t pending = m_fenceValues[m_frameIndex];
+    if (pending != 0 && !WaitForFence(m_fence.Get(), pending, m_fenceEvent)) {
+        return nullptr;
+    }
+
+    // このスロットの処理は完了しているので、解放待ちを回収してリングを巻き戻す。
+    // 既存のフェンス待機後に読む。計測のための追加 GPU 待機は入れない。
+    ReadFrameTiming();
+    m_deletionQueue.Collect(m_fence->GetCompletedValue());
+    m_uploadRing.BeginFrame(m_frameIndex);
+
+    if (!SG_CHECK_HR(m_commandAllocators[m_frameIndex]->Reset())) {
+        return nullptr;
+    }
+    if (!SG_CHECK_HR(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr))) {
+        return nullptr;
+    }
+
+    PIXBeginEvent(m_commandList.Get(), PIX_COLOR(0, 128, 255), "Frame");
+    m_commandList->EndQuery(m_frameTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                            m_frameIndex * 2);
+
+    const auto toRenderTarget = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_backBuffers[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    m_commandList->ResourceBarrier(1, &toRenderTarget);
+
+    // ターゲット・ビューポート・シザーは、途中で描画先を戻すときと同じ設定。
+    BindBackBuffer(m_commandList.Get());
+    m_commandList->ClearRenderTargetView(m_backBufferRtvs[m_frameIndex].cpu, clearColor, 0,
+                                         nullptr);
+
+    ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
+    m_commandList->SetDescriptorHeaps(1, heaps);
+
+    m_frameOpen = true;
+    return m_commandList.Get();
+}
+
+void Device::CaptureBackBuffer() {
+    ID3D12Resource* backBuffer = m_backBuffers[m_frameIndex].Get();
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    UINT rowCount = 0;
+    UINT64 rowSizeInBytes = 0;
+    UINT64 totalBytes = 0;
+    const D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
+    m_device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rowCount, &rowSizeInBytes,
+                                    &totalBytes);
+
+    GpuBuffer readback;
+    if (!m_allocator.CreateReadbackBuffer(totalBytes, L"BackBufferCapture", readback)) {
+        FinishCapture(false);
+        return;
+    }
+
+    // 記録中のコマンドリストへコピーを積む。Present 後はフリップモデルだと
+    // バックバッファの内容が破棄されうるため、必ずフレームの中で写す。
+    const auto toCopySource = CD3DX12_RESOURCE_BARRIER::Transition(
+        backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    m_commandList->ResourceBarrier(1, &toCopySource);
+
+    const CD3DX12_TEXTURE_COPY_LOCATION destination(readback.resource.Get(), footprint);
+    const CD3DX12_TEXTURE_COPY_LOCATION source(backBuffer, 0);
+    m_commandList->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+
+    const auto toRenderTarget = CD3DX12_RESOURCE_BARRIER::Transition(
+        backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    m_commandList->ResourceBarrier(1, &toRenderTarget);
+
+    // 保存はこのフレームを流し終えてから。EndFrame の末尾で回収する。
+    m_pendingCapture = std::move(readback);
+    m_pendingCaptureFootprint = footprint;
+}
+
+namespace {
+const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
+    switch (op) {
+        case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return "SetMarker";
+        case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return "BeginEvent";
+        case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return "EndEvent";
+        case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return "DrawInstanced";
+        case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: return "DrawIndexedInstanced";
+        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return "ExecuteIndirect";
+        case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: return "Dispatch";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return "CopyBufferRegion";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return "CopyTextureRegion";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return "CopyResource";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: return "ResolveSubresource";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: return "ClearRenderTargetView";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW: return "ClearUnorderedAccessView";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: return "ClearDepthStencilView";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return "ResourceBarrier";
+        case D3D12_AUTO_BREADCRUMB_OP_PRESENT: return "Present";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return "ResolveQueryData";
+        default: return nullptr;
+    }
+}
+std::string Narrow(const wchar_t* text) {
+    if (text == nullptr) return "(名前なし)";
+    const int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+    std::string result(size > 0 ? size - 1 : 0, '\0');
+    if (size > 1) WideCharToMultiByte(CP_UTF8, 0, text, -1, result.data(), size, nullptr, nullptr);
+    return result;
+}
+}  // namespace
+
+bool Device::CheckDeviceRemoved() {
+    if (!m_device) return false;
+    const HRESULT reason = m_device->GetDeviceRemovedReason();
+    if (reason == S_OK) return false;
+    m_initialized = false;
+    if (m_deviceRemovedReported) return true;
+    m_deviceRemovedReported = true;
+
+    // 報告は 1 回だけ。DRED の中身を文字列にまとめ、ログとファイルへ出す。
+    std::string report;
+    char line[512];
+    std::snprintf(line, sizeof(line), "GPU のデバイスが失われました (Reason=0x%08X)\n", static_cast<unsigned int>(reason));
+    report += line;
+    ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
+    if (SUCCEEDED(m_device.As(&dred))) {
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs = {};
+        if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&breadcrumbs))) {
+            report += "--- 実行が終わっていないコマンドリスト（[>] が最後に終わった命令の次）\n";
+            for (const D3D12_AUTO_BREADCRUMB_NODE1* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
+                const uint32_t completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+                if (completed >= node->BreadcrumbCount) continue;  // 終わったリストは出さない
+                std::snprintf(line, sizeof(line), "queue=%s list=%s 完了 %u / %u\n", Narrow(node->pCommandQueueDebugNameW).c_str(),
+                              Narrow(node->pCommandListDebugNameW).c_str(), completed, node->BreadcrumbCount);
+                report += line;
+                // PIX マーカーの名前（BeginEvent などの文脈）を命令の番号で引く。
+                const auto contextOf = [&](uint32_t index) -> std::string {
+                    for (uint32_t c = 0; c < node->BreadcrumbContextsCount; ++c)
+                        if (node->pBreadcrumbContexts[c].BreadcrumbIndex == index)
+                            return Narrow(node->pBreadcrumbContexts[c].pContextString);
+                    return {};
+                };
+                const uint32_t first = completed > 24 ? completed - 24 : 0;
+                const uint32_t last = std::min(node->BreadcrumbCount, completed + 8);
+                for (uint32_t i = first; i < last; ++i) {
+                    const char* name = BreadcrumbOpName(node->pCommandHistory[i]);
+                    const std::string context = contextOf(i);
+                    std::snprintf(line, sizeof(line), "  %s %4u %s%s%s\n", i == completed ? "[>]" : "   ", i,
+                                  name ? name : std::to_string(static_cast<int>(node->pCommandHistory[i])).c_str(),
+                                  context.empty() ? "" : "  ", context.c_str());
+                    report += line;
+                }
+            }
+        }
+        D3D12_DRED_PAGE_FAULT_OUTPUT1 pageFault = {};
+        if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&pageFault)) && pageFault.PageFaultVA != 0) {
+            std::snprintf(line, sizeof(line), "--- ページフォールト VA=0x%016llX\n", static_cast<unsigned long long>(pageFault.PageFaultVA));
+            report += line;
+            for (const auto* node = pageFault.pHeadExistingAllocationNode; node; node = node->pNext)
+                report += "  存在する割り当て: " + Narrow(node->ObjectNameW) + "\n";
+            for (const auto* node = pageFault.pHeadRecentFreedAllocationNode; node; node = node->pNext)
+                report += "  最近解放した割り当て: " + Narrow(node->ObjectNameW) + "\n";
+        }
+    }
+    SG_LOG_ERROR("%s", report.c_str());
+    // ログの窓を開かずに使っていても原因が残るよう、ファイルにも書く。
+    wchar_t* localAppData = nullptr;
+    size_t length = 0;
+    if (_wdupenv_s(&localAppData, &length, L"LOCALAPPDATA") == 0 && localAppData != nullptr) {
+        SYSTEMTIME time;
+        GetLocalTime(&time);
+        wchar_t name[128];
+        swprintf_s(name, L"\\surface-graph\\device-removed-%04u%02u%02u-%02u%02u%02u.txt", time.wYear, time.wMonth, time.wDay,
+                   time.wHour, time.wMinute, time.wSecond);
+        const std::wstring path = std::wstring(localAppData) + name;
+        free(localAppData);
+        FILE* file = nullptr;
+        if (_wfopen_s(&file, path.c_str(), L"wb") == 0 && file != nullptr) {
+            std::fwrite(report.data(), 1, report.size(), file);
+            std::fclose(file);
+            SG_LOG_ERROR(ui::Tr("デバイスロストの記録を書きました: %ls", "Wrote the device removed report: %ls"), path.c_str());
+            m_deviceRemovedReportPath = path;
+        }
+    }
+    return true;
+}
+
+void Device::EndFrame(bool vsync) {
+    if (!m_frameOpen) {
+        return;
+    }
+
+    // Present やスクリーンショットのコピーより前で区切る。
+    m_commandList->EndQuery(m_frameTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                            m_frameIndex * 2 + 1);
+    m_commandList->ResolveQueryData(m_frameTimestampHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                   m_frameIndex * 2, 2, m_frameTimestampReadback.resource.Get(),
+                                   sizeof(uint64_t) * 2 * m_frameIndex);
+
+    if (!m_capturePath.empty()) {
+        CaptureBackBuffer();
+    }
+
+    const auto toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_backBuffers[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PRESENT);
+    m_commandList->ResourceBarrier(1, &toPresent);
+
+    PIXEndEvent(m_commandList.Get());
+
+    if (!SG_CHECK_HR(m_commandList->Close())) {
+        m_frameOpen = false;
+        // このフレームは投入されない。キャプチャを抱えたままにすると、
+        // 次フレームで未実行のリードバックを上書きしてゴミを保存してしまう。
+        FinishCapture(false);
+        return;
+    }
+
+    ID3D12CommandList* lists[] = {m_commandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, lists);
+    m_frameTimestampPending[m_frameIndex] = true;
+
+    const UINT syncInterval = vsync ? 1u : 0u;
+    const UINT presentFlags = (!vsync && m_allowTearing) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    const HRESULT presentResult = m_swapChain->Present(syncInterval, presentFlags);
+    if (presentResult == DXGI_ERROR_DEVICE_REMOVED || presentResult == DXGI_ERROR_DEVICE_RESET) {
+        SG_LOG_ERROR(ui::Tr("Present がデバイスロストを返しました (0x%08X)", "Present returned device removed (0x%08X)"), static_cast<unsigned int>(presentResult));
+        CheckDeviceRemoved();
+        m_initialized = false;
+    } else {
+        SG_CHECK_HR(presentResult);
+    }
+
+    m_frameOpen = false;
+    MoveToNextFrame();
+
+    if (m_pendingCapture.IsValid()) {
+        // 開発用の書き出しなので、その場で待って保存する。
+        WaitForGpu();
+
+        bool saved = false;
+        void* mapped = nullptr;
+        const D3D12_RANGE readRange = {0, static_cast<SIZE_T>(m_pendingCapture.sizeInBytes)};
+        if (SG_CHECK_HR(m_pendingCapture.resource->Map(0, &readRange, &mapped))) {
+            saved = SaveRgba8Png(
+                m_capturePath, m_width, m_height, m_pendingCaptureFootprint.Footprint.RowPitch,
+                static_cast<const uint8_t*>(mapped) + m_pendingCaptureFootprint.Offset);
+            const D3D12_RANGE writtenRange = {0, 0};
+            m_pendingCapture.resource->Unmap(0, &writtenRange);
+            if (!saved) {
+                SG_LOG_ERROR(ui::Tr("バックバッファの書き出しに失敗しました", "Failed to save the back buffer"));
+            }
+        }
+
+        Defer(m_pendingCapture.resource);
+        Defer(m_pendingCapture.allocation);
+        FinishCapture(saved);
+    }
+}
+
+void Device::BindBackBuffer(ID3D12GraphicsCommandList* commandList) {
+    if (commandList == nullptr || !m_initialized) {
+        return;
+    }
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_backBufferRtvs[m_frameIndex].cpu;
+    commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+    const auto viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(m_width),
+                                           static_cast<float>(m_height));
+    const auto scissor = CD3DX12_RECT(0, 0, static_cast<LONG>(m_width),
+                                      static_cast<LONG>(m_height));
+    commandList->RSSetViewports(1, &viewport);
+    commandList->RSSetScissorRects(1, &scissor);
+}
+
+bool Device::ExecuteImmediate(const std::function<void(ID3D12GraphicsCommandList*)>& record) {
+    if (!m_immediateCommandList || !record) {
+        return false;
+    }
+    if (m_frameOpen) {
+        // 内部で WaitForGpu するため、フレーム記録中には使えない（WaitForGpu と同じ理由）。
+        SG_LOG_ERROR(ui::Tr("BeginFrame と EndFrame の間で ExecuteImmediate が呼ばれました（無視します）", "ExecuteImmediate called between BeginFrame and EndFrame (ignored)"));
+        return false;
+    }
+    if (!SG_CHECK_HR(m_immediateAllocator->Reset())) {
+        return false;
+    }
+    if (!SG_CHECK_HR(m_immediateCommandList->Reset(m_immediateAllocator.Get(), nullptr))) {
+        return false;
+    }
+
+    ID3D12DescriptorHeap* heaps[] = {m_srvHeap.Heap()};
+    m_immediateCommandList->SetDescriptorHeaps(1, heaps);
+
+    record(m_immediateCommandList.Get());
+
+    if (!SG_CHECK_HR(m_immediateCommandList->Close())) {
+        return false;
+    }
+    ID3D12CommandList* lists[] = {m_immediateCommandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, lists);
+    WaitForGpu();
+    return true;
+}
+
+void Device::MoveToNextFrame() {
+    const uint64_t value = m_nextFenceValue++;
+    if (!SG_CHECK_HR(m_commandQueue->Signal(m_fence.Get(), value))) {
+        // Signal に失敗するのは実質デバイスロスト時のみ。古いフェンス値のまま続けると、
+        // GPU が実行中のアロケータを次の BeginFrame が Reset してしまうため止める。
+        SG_LOG_ERROR(ui::Tr("フェンスの Signal に失敗しました。描画を停止します", "Fence Signal failed. Stopping rendering"));
+        m_initialized = false;
+        return;
+    }
+    m_fenceValues[m_frameIndex] = value;
+
+    m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+}
+
+void Device::WaitForGpu() {
+    if (!m_commandQueue || !m_fence || m_fenceEvent == nullptr) {
+        return;
+    }
+    if (m_frameOpen) {
+        // フレーム記録中に待つと、記録中のコマンドが参照するオブジェクトの
+        // フェンス値まで完了扱いになり、削除キューが早回収してしまう。
+        SG_LOG_ERROR(ui::Tr("BeginFrame と EndFrame の間で WaitForGpu が呼ばれました（無視します）", "WaitForGpu called between BeginFrame and EndFrame (ignored)"));
+        return;
+    }
+
+    const uint64_t value = m_nextFenceValue++;
+    if (!SG_CHECK_HR(m_commandQueue->Signal(m_fence.Get(), value))) {
+        return;
+    }
+    if (!WaitForFence(m_fence.Get(), value, m_fenceEvent)) {
+        return;
+    }
+
+    // 補助フェンスの仕事（別キューの合成の評価）も終わるまで待つ。
+    // 「GPU が止まった」と信じて消す側は、そちらが参照中かどうかを知らない。
+    for (const AuxiliaryFence& aux : m_auxiliaryFences) {
+        WaitForFence(aux.fence.Get(), aux.value, m_fenceEvent);
+    }
+    PruneAuxiliaryFences();
+
+    // ここまでで全スロットの処理は完了している。
+    for (auto& fenceValue : m_fenceValues) {
+        fenceValue = 0;
+    }
+
+    // GPU アイドルが確定したので、解放待ちをここで回収する。
+    // ExecuteImmediate が連続する読み込み経路でステージングが滞留しないようにする。
+    m_deletionQueue.Collect(m_fence->GetCompletedValue());
+}
+
+void Device::Shutdown() {
+    if (m_initialized) {
+        WaitForGpu();
+    }
+    m_initialized = false;
+    m_frameOpen = false;
+
+    // Close 失敗などで残ったキャプチャを、アロケータ破棄より先に手放す。
+    m_pendingCapture = GpuBuffer{};
+    m_capturePath.clear();
+    m_captureCallback = {};
+
+    m_deletionQueue.Flush();
+    m_deletionQueue.ClearAuxiliaryFences();
+    m_auxiliaryFences.clear();
+    m_uploadRing.Destroy();
+    if (m_frameTimestampMapped != nullptr) {
+        m_frameTimestampReadback.resource->Unmap(0, nullptr);
+        m_frameTimestampMapped = nullptr;
+    }
+    m_frameTimestampReadback = GpuBuffer{};
+    m_frameTimestampHeap.Reset();
+    m_timestampFrequency = 0;
+    m_gpuFrameMilliseconds = -1.0;
+    for (auto& pending : m_frameTimestampPending) pending = false;
+    ReleaseBackBuffers();
+    m_rtvHeap.Destroy();
+    m_dsvHeap.Destroy();
+    m_srvHeap.Destroy();
+    // アロケータは、そこから確保した全リソースを解放したあとで破棄する。
+    m_allocator.Destroy();
+    m_commandList.Reset();
+    m_immediateCommandList.Reset();
+    m_immediateAllocator.Reset();
+    for (auto& allocator : m_commandAllocators) {
+        allocator.Reset();
+    }
+    m_swapChain.Reset();
+    m_fence.Reset();
+    if (m_fenceEvent != nullptr) {
+        ::CloseHandle(m_fenceEvent);
+        m_fenceEvent = nullptr;
+    }
+    m_commandQueue.Reset();
+    // InfoQueue はデバイスへの参照を持つため、先に手放さないとデバイスが解放されない。
+    m_infoQueue.Reset();
+    m_device.Reset();
+    m_adapter.Reset();
+    m_factory.Reset();
+}
+
+}  // namespace sg::rhi

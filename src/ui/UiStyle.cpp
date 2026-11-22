@@ -1,0 +1,1359 @@
+#include "ui/UiStyle.h"
+
+#include "core/ColorSpace.h"
+
+#include <imgui_internal.h>
+#include <imgui_stdlib.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <map>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <vector>
+
+namespace sg::ui {
+namespace {
+
+float g_dpiScale = 1.0f;
+
+// グレー基調のパレット。彩度はほぼ持たせず、明度だけで階層を作る。
+// 値は sRGB の 8bit を 255 で割ったもの。design-guide.md の表と一致させること。
+constexpr ImVec4 Gray(float value, float alpha = 1.0f) {
+    return ImVec4(value, value, value, alpha);
+}
+
+constexpr ImVec4 kWindowBg = Gray(0.118f);      // #1E1E1E
+constexpr ImVec4 kPanelBg = Gray(0.137f);       // #232323
+constexpr ImVec4 kTitleBg = Gray(0.094f);       // #181818
+constexpr ImVec4 kFrameBg = Gray(0.169f);       // #2B2B2B
+constexpr ImVec4 kFrameBgHovered = Gray(0.212f);// #363636
+constexpr ImVec4 kFrameBgActive = Gray(0.255f); // #414141
+constexpr ImVec4 kHeaderBg = Gray(0.196f);      // #323232
+constexpr ImVec4 kHeaderHovered = Gray(0.235f); // #3C3C3C
+constexpr ImVec4 kHeaderActive = Gray(0.290f);  // #4A4A4A
+constexpr ImVec4 kBorder = Gray(0.204f);        // #343434
+// タブ。**明度の 3 段（帯 < 非選択 < 選択）だけで状態を表す。**
+// 帯（タブを並べる下地）を一番暗くすることで、タブが板として浮いて見える。
+constexpr ImVec4 kTab = Gray(0.169f);           // #2B2B2B 非選択
+constexpr ImVec4 kTabHovered = Gray(0.212f);    // #363636
+constexpr ImVec4 kTabSelected = Gray(0.243f);   // #3E3E3E 選択
+// 選択中のタブの上辺に引く線。**色は付けない。**
+// 明度だけで階層を作る方針に合わせ、中身との繋がりを示す控えめな線に留める。
+constexpr ImVec4 kTabOverline = Gray(0.400f);   // #666666
+constexpr ImVec4 kSeparator = Gray(0.220f);     // #383838
+constexpr ImVec4 kGrab = Gray(0.376f);          // #606060
+constexpr ImVec4 kGrabActive = Gray(0.510f);    // #828282
+constexpr ImVec4 kText = Gray(0.804f);          // #CDCDCD
+constexpr ImVec4 kTextDisabled = Gray(0.455f);  // #747474
+
+// 既定値マーカーの「既定値のまま」の色。専用に持つ。
+//
+// もとは kTextDisabled (#747474) を使っていたが、アクセント (#96A3AD) と明度が近く、
+// **変えてあるかどうかがひと目で分からなかった。** はっきり暗く落として差をつける。
+// kTextDisabled 自体は補助テキストでも使うので、そちらは動かさない。
+constexpr ImVec4 kResetDot = Gray(0.271f);         // #454545
+// 既定値のままでもホバーで少し持ち上げる。押せることが分かるようにするため。
+// アクセントには寄せない（変更済みと紛らわしくなる）。
+constexpr ImVec4 kResetDotHovered = Gray(0.455f);  // #747474
+
+// 唯一のアクセント。彩度を持たせすぎるとグレー基調が崩れるので、
+// わずかに青へ寄せた明るい灰にとどめる。選択・チェック・つまみの強調にだけ使う。
+constexpr ImVec4 kAccent = ImVec4(0.588f, 0.639f, 0.678f, 1.0f);  // #96A3AD
+
+// 通知の意味色。座標軸ギズモの X/Y/Z と同じく「意味を持つ色」で、
+// テーマのグレーとは別枠。彩度を上げるとグレー基調が崩れるので低めに抑える。
+constexpr ImVec4 kWarn = ImVec4(0.749f, 0.627f, 0.416f, 1.0f);   // #BFA06A
+constexpr ImVec4 kError = ImVec4(0.784f, 0.482f, 0.447f, 1.0f);  // #C87B72
+
+// ツールチップの折り返し幅（フォントサイズ比）。
+constexpr float kTooltipWrapRatio = 22.0f;
+
+// 折り返して出すツールチップ。長い説明が 1 行のまま画面を横切らないようにする。
+void WrappedTooltip(const char* text) {
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * kTooltipWrapRatio);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+void DrawTooltip(const char* tooltip) {
+    if (tooltip == nullptr || tooltip[0] == '\0') {
+        return;
+    }
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        return;
+    }
+    WrappedTooltip(tooltip);
+}
+
+// 数値行のツールチップ。**直接入力できることは気づきにくい**ので必ず添える。
+// 戻り値は次に呼ぶまでの一時領域を指す（そのまま PropertyLabel へ渡す前提）。
+const char* NumericTooltip(const char* tooltip) {
+    static char buffer[512];
+    const char* inputHelp = Tr("Ctrl + クリックで直接入力", "Ctrl + click to type a value");
+    if (tooltip == nullptr || tooltip[0] == '\0') {
+        return inputHelp;
+    }
+    std::snprintf(buffer, sizeof(buffer), "%s\n%s", tooltip, inputHelp);
+    return buffer;
+}
+
+// 既定値マーカー。既定値と違うときだけ明るく塗り、押すと既定値へ戻す。
+//
+// 「既定値から変えてあるか」の視覚表現はこの点だけに集約する。
+// ラベルの色を変えるといった二重の表現は入れない。
+//
+// 点の描画と押下判定だけを行い、ツールチップは呼び出し側が hovered を見て出す。
+// 既定値の文字列を毎フレーム作らず、ホバー中だけ作れるようにするため。
+bool ResetDotCore(bool isDefault, bool& hovered) {
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+
+    const float size = ImGui::GetFrameHeight();
+    const bool pressed = ImGui::InvisibleButton("##reset", ImVec2(size, size));
+
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const ImVec2 center((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+    hovered = ImGui::IsItemHovered();
+
+    ImU32 color = ImGui::GetColorU32(hovered ? kResetDotHovered : kResetDot);
+    if (!isDefault) {
+        color = ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_CheckMark);
+    }
+    const float radius = std::max(2.0f, size * 0.16f);
+    ImGui::GetWindowDrawList()->AddCircleFilled(center, radius, color);
+    return pressed;
+}
+
+// 既定値マーカーのツールチップ。defaultText は既定値を画面に出す形にした文字列。
+void ResetTooltip(const char* defaultText) {
+    ImGui::SetTooltip(Tr("既定値に戻す\n既定値: %s", "Reset to default\nDefault: %s"), defaultText);
+}
+
+// 既定値の文字列が最初から手元にある行（真偽・選択肢）向け。
+// 書式化が要る行は ResetDotCore を直接使い、ホバー中だけ文字列を作る。
+bool ResetDot(bool isDefault, const char* defaultText) {
+    bool hovered = false;
+    const bool pressed = ResetDotCore(isDefault, hovered);
+    if (hovered) {
+        ResetTooltip(defaultText);
+    }
+    return pressed;
+}
+
+std::string FormatFloat(float value, const char* format) {
+    char buffer[64] = {};
+    std::snprintf(buffer, sizeof(buffer), format, value);
+    return buffer;
+}
+
+bool NearlyEqual(float a, float b) {
+    return std::fabs(a - b) <= 1e-5f * std::max(1.0f, std::max(std::fabs(a), std::fabs(b)));
+}
+
+// スライダーやコンボの幅。値列の残り幅から既定値マーカーぶんを引いて丸める。
+float ValueWidth(float minWidth, float maxWidth) {
+    const float reserved = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x;
+    return std::clamp(ImGui::GetContentRegionAvail().x - reserved, TextScaled(minWidth),
+                      TextScaled(maxWidth));
+}
+
+}  // namespace
+
+// サムネイルの選択枠。画像の上に重ねて描く。
+//
+// 背景を敷く方式では表せない。サムネイルが不透明だと下が完全に隠れるため。
+// 選択はアクセント、ホバーは押せることが分かる程度の弱い枠にとどめる。
+void ThumbnailFrame(const ImVec2& min, const ImVec2& max, bool selected, bool hovered) {
+    if (!selected && !hovered) {
+        return;
+    }
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float rounding = ImGui::GetStyle().FrameRounding;
+
+    if (selected) {
+        // 枠は矩形の内側へ寄せて描く。ちょうど境界へ置くと、
+        // 隣のサムネイルとの間で線の太さが揃わない。
+        const float thickness = Scaled(2.0f);
+        const float inset = thickness * 0.5f;
+        drawList->AddRect(ImVec2(min.x + inset, min.y + inset),
+                          ImVec2(max.x - inset, max.y - inset),
+                          ImGui::GetColorU32(ImGuiCol_CheckMark), rounding, 0, thickness);
+        return;
+    }
+
+    drawList->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_HeaderHovered), rounding, 0,
+                      Scaled(1.0f));
+}
+
+Thumbnail ThumbnailButton(const char* id, ImTextureID texture, float size, bool selected, int captionLines) {
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + size, min.y + size);
+    const ImVec2 cursor = ImGui::GetCursorPos();
+
+    // ID を持つアイテムを先に置く。これが無いとドラッグ元にできない。
+    // 名前の行まで含めるときは縦に伸ばし、カーソルは正方形の直下へ戻す
+    // （呼び側の GridCaption がこれまでどおりの位置に並ぶ）。
+    const float extra = captionLines > 0
+        ? captionLines * ImGui::GetTextLineHeightWithSpacing() - ImGui::GetStyle().ItemSpacing.y : 0.0f;
+    ImGui::InvisibleButton(id, ImVec2(size, size + extra));
+    if (extra > 0.0f) ImGui::SetCursorPos(ImVec2(cursor.x, cursor.y + size + ImGui::GetStyle().ItemSpacing.y));
+
+    Thumbnail state;
+    state.hovered = ImGui::IsItemHovered();
+    state.clicked = ImGui::IsItemClicked();
+    state.doubleClicked = state.hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+
+    // **まだ絵が無いときは枠だけ描く。** ImTextureID の 0 は ImTextureID_Invalid で、
+    // そのまま AddImage へ渡すとデバッグビルドの ImGui がアサートで落ちる。
+    // 天球のサムネイルは HDR の読み込みを伴うので 1 フレームに 1 枚ずつ作られ、
+    // 未生成の枠が必ず一覧に並ぶ。
+    if (texture != ImTextureID_Invalid) {
+        ImGui::GetWindowDrawList()->AddImage(texture, min, max);
+    }
+    ThumbnailFrame(min, max, selected, state.hovered);
+    return state;
+}
+
+void ThumbnailImage(ImTextureID texture, float size) {
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + size, min.y + size);
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    if (texture != ImTextureID_Invalid) {
+        drawList->AddImage(texture, min, max, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                           IM_COL32_WHITE);
+    }
+    // まだ中身が無いときも場所は空けておく。行ごとに幅が変わると読みにくい。
+    // 枠は中身の有無に関わらず引く。行に並ぶ箱の大きさを揃えて見せるため。
+    drawList->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_Border), rounding, 0, Scaled(1.0f));
+
+    ImGui::Dummy(ImVec2(size, size));
+}
+
+namespace {
+
+// 警告の三角（中に縦棒と点）。字形の無い記号なので図形で描く。
+// center を中心に、一辺がおよそ size の正三角形。
+void DrawWarningTriangle(ImDrawList* drawList, const ImVec2& center, float size, ImU32 color) {
+    const float half = size * 0.5f;
+    const float top = center.y - half * 0.95f;
+    const float bottom = center.y + half * 0.75f;
+    drawList->AddTriangle(ImVec2(center.x, top), ImVec2(center.x + half, bottom),
+                          ImVec2(center.x - half, bottom), color, std::max(1.0f, size * 0.09f));
+    // 「!」は上の棒と下の点。棒は三角の中央より少し上へ寄せる。
+    const float thickness = std::max(1.0f, size * 0.09f);
+    drawList->AddLine(ImVec2(center.x, center.y - half * 0.35f),
+                      ImVec2(center.x, center.y + half * 0.15f), color, thickness);
+    drawList->AddCircleFilled(ImVec2(center.x, center.y + half * 0.42f), thickness * 0.7f,
+                              color);
+}
+
+}  // namespace
+
+void MissingThumbnail(const ImVec2& min, const ImVec2& max) {
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    // 絵が無い所は枠の色で塗って、空白ではなく「場所はある」と見せる。
+    drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+    const float size = std::min(max.x - min.x, max.y - min.y);
+    DrawWarningTriangle(drawList, ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f),
+                        size * 0.42f, WarnColor());
+    // 枠は内側へ寄せる（ThumbnailFrame の選択枠と同じ理由）。
+    const float thickness = Scaled(1.0f);
+    const float inset = thickness * 0.5f;
+    drawList->AddRect(ImVec2(min.x + inset, min.y + inset), ImVec2(max.x - inset, max.y - inset),
+                      WarnColor(), rounding, 0, thickness);
+}
+
+void MissingBadge(const ImVec2& min, const ImVec2& max) {
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float tile = std::min(max.x - min.x, max.y - min.y);
+    // 右下の角に、絵を隠さない程度の大きさで。下地を敷いて絵の上でも読めるようにする。
+    const float size = std::max(Scaled(14.0f), tile * 0.26f);
+    const float margin = Scaled(3.0f);
+    const ImVec2 badgeMin(max.x - margin - size, max.y - margin - size);
+    const ImVec2 badgeMax(max.x - margin, max.y - margin);
+    drawList->AddRectFilled(badgeMin, badgeMax, ImGui::GetColorU32(ImGuiCol_FrameBg),
+                            ImGui::GetStyle().FrameRounding);
+    DrawWarningTriangle(drawList, ImVec2((badgeMin.x + badgeMax.x) * 0.5f,
+                                         (badgeMin.y + badgeMax.y) * 0.5f),
+                        size * 0.7f, WarnColor());
+}
+
+void ColorSwatch(const ImVec4& color, float size) {
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + size, min.y + size);
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    // 色そのものが中身なので塗る。枠だけはテーマの色を使う。
+    drawList->AddRectFilled(min, max, ImGui::GetColorU32(color), rounding);
+    drawList->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_Border), rounding, 0, Scaled(1.0f));
+
+    ImGui::Dummy(ImVec2(size, size));
+}
+
+// アセット種類のアイコン。字形を持たないので図形で描く。
+// 既存のサムネイル枠の上に、線画だけを載せる。塗りは持たせない。
+void DrawAssetIcon(AssetIcon icon, const ImVec2& min, const ImVec2& max) {
+    const float size = std::min(max.x - min.x, max.y - min.y);
+    const ImVec2 origin((min.x + max.x - size) * 0.5f, (min.y + max.y - size) * 0.5f);
+    const auto at = [&](float x, float y) { return ImVec2(origin.x + size * x, origin.y + size * y); };
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto color = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const float thickness = size / 42.0f;
+    const auto line = [&](float x1, float y1, float x2, float y2) {
+        draw->AddLine(at(x1, y1), at(x2, y2), color, thickness);
+    };
+    draw->PathClear();
+    if (icon == AssetIcon::Atmosphere) {
+        // 地平線から昇る太陽。雲の輪郭とは異なる放射状のシルエット。
+        draw->PathArcTo(at(0.5f, 0.59f), size * 0.18f, 3.14159265f, 6.28318531f, 24);
+        draw->PathStroke(color, ImDrawFlags_None, thickness);
+        line(0.16f, 0.59f, 0.84f, 0.59f);
+        line(0.26f, 0.71f, 0.74f, 0.71f);
+        line(0.5f, 0.22f, 0.5f, 0.31f);
+        line(0.24f, 0.33f, 0.30f, 0.39f);
+        line(0.76f, 0.33f, 0.70f, 0.39f);
+    } else if (icon == AssetIcon::Terrain) {
+        draw->PathLineTo(at(0.16f, 0.73f));
+        draw->PathLineTo(at(0.40f, 0.29f));
+        draw->PathLineTo(at(0.57f, 0.57f));
+        draw->PathLineTo(at(0.67f, 0.42f));
+        draw->PathLineTo(at(0.84f, 0.73f));
+        draw->PathStroke(color, ImDrawFlags_Closed, thickness);
+        draw->PathLineTo(at(0.32f, 0.44f));
+        draw->PathLineTo(at(0.40f, 0.49f));
+        draw->PathLineTo(at(0.47f, 0.41f));
+        draw->PathStroke(color, ImDrawFlags_None, thickness);
+    } else {
+        // 底辺の途中で閉じ、継ぎ目に頂点が重ならない雲の輪郭。
+        draw->PathLineTo(at(0.44f, 0.70f));
+        draw->PathLineTo(at(0.72f, 0.70f));
+        draw->PathBezierCubicCurveTo(at(0.90f, 0.70f), at(0.90f, 0.44f), at(0.73f, 0.44f));
+        draw->PathBezierCubicCurveTo(at(0.73f, 0.20f), at(0.39f, 0.20f), at(0.37f, 0.42f));
+        draw->PathBezierCubicCurveTo(at(0.27f, 0.36f), at(0.20f, 0.43f), at(0.21f, 0.51f));
+        draw->PathBezierCubicCurveTo(at(0.10f, 0.55f), at(0.14f, 0.70f), at(0.27f, 0.70f));
+        draw->PathStroke(color, ImDrawFlags_Closed, thickness);
+    }
+}
+
+// 目のアイコン。字形を持たないので図形で描く。
+//
+// 開いた目は上下 2 本の放物線で作った紡錘形と瞳、閉じた目は下向きの弧 1 本。
+// 「見えている / 見えていない」が一目で分かればよいので、これ以上作り込まない。
+namespace {
+
+void DrawEye(ImDrawList* drawList, const ImVec2& center, float size, bool open, ImU32 color) {
+    constexpr int kSegments = 14;
+    const float halfWidth = size * 0.46f;
+    const float halfHeight = size * 0.30f;
+    const float thickness = Scaled(1.3f);
+
+    if (!open) {
+        // 閉じたまぶた。下へふくらむ弧。
+        drawList->PathClear();
+        for (int i = 0; i <= kSegments; ++i) {
+            const float t = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(kSegments);
+            drawList->PathLineTo(
+                ImVec2(center.x + t * halfWidth, center.y + halfHeight * (1.0f - t * t)));
+        }
+        drawList->PathStroke(color, ImDrawFlags_None, thickness);
+        return;
+    }
+
+    drawList->PathClear();
+    for (int i = 0; i <= kSegments; ++i) {
+        const float t = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(kSegments);
+        drawList->PathLineTo(
+            ImVec2(center.x + t * halfWidth, center.y - halfHeight * (1.0f - t * t)));
+    }
+    for (int i = kSegments; i >= 0; --i) {
+        const float t = -1.0f + 2.0f * static_cast<float>(i) / static_cast<float>(kSegments);
+        drawList->PathLineTo(
+            ImVec2(center.x + t * halfWidth, center.y + halfHeight * (1.0f - t * t)));
+    }
+    drawList->PathStroke(color, ImDrawFlags_Closed, thickness);
+    drawList->AddCircleFilled(center, size * 0.15f, color, 12);
+}
+
+}  // namespace
+
+namespace {
+
+// 図形で描くオン / オフの切り替えの共通部。size 角の当たり判定を置き、押されたら値を反転する。
+// outMin に左上、outColor に図形の色を返す。値が変わったら true。
+bool IconToggle(const char* id, bool* value, float size, ImVec2& outMin, ImU32& outColor) {
+    outMin = ImGui::GetCursorScreenPos();
+
+    ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered();
+
+    bool changed = false;
+    if (ImGui::IsItemClicked()) {
+        *value = !*value;
+        changed = true;
+    }
+
+    // オンは本文の色、オフは補助文字の色。ホバー中だけ本文の色へ持ち上げて、
+    // 押せることを示す。色はテーマから引く（直書きしない）。
+    outColor = (*value || hovered) ? ImGui::GetColorU32(ImGuiCol_Text)
+                                   : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    return changed;
+}
+
+}  // namespace
+
+bool EyeToggle(const char* id, bool* value, float size) {
+    ImVec2 min;
+    ImU32 color = 0;
+    const bool changed = IconToggle(id, value, size, min, color);
+    DrawEye(ImGui::GetWindowDrawList(), ImVec2(min.x + size * 0.5f, min.y + size * 0.5f), size,
+            *value, color);
+
+    return changed;
+}
+
+bool WireframeToggle(const char* id, bool* value, float size) {
+    ImVec2 min;
+    ImU32 color = 0;
+    const bool changed = IconToggle(id, value, size, min, color);
+    // 目と同じ大きさに見えるよう、枠の内側を少し空けた四角を縦に 2 つへ割り、それぞれに対角線を引く。
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float inset = size * 0.14f;
+    const float thickness = std::max(1.0f, size * 0.08f);
+    const ImVec2 a(min.x + inset, min.y + inset), b(min.x + size - inset, min.y + size - inset);
+    const float midX = (a.x + b.x) * 0.5f;
+    drawList->AddRect(a, b, color, 0.0f, 0, thickness);
+    drawList->AddLine(ImVec2(midX, a.y), ImVec2(midX, b.y), color, thickness);
+    drawList->AddLine(ImVec2(a.x, b.y), ImVec2(midX, a.y), color, thickness);
+    drawList->AddLine(ImVec2(midX, b.y), ImVec2(b.x, a.y), color, thickness);
+    return changed;
+}
+
+bool SaveIconButton(const char* id, float size, const char* tooltip) {
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool clicked = ImGui::IsItemClicked();
+    if (hovered && tooltip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("%s", tooltip);
+    }
+
+    // 普段は補助文字の色、ホバー中は本文の色へ持ち上げて押せることを示す。
+    const ImU32 color = hovered ? ImGui::GetColorU32(ImGuiCol_Text)
+                                : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float thickness = Scaled(1.3f);
+    // 当たり判定は size 角。図形は文字の高さに収め、枠の中央に置く
+    //（UnsavedMark と同じ FrameHeight を渡すと、印と図形の中心が揃う）。
+    const float glyph = std::min(size, ImGui::GetTextLineHeight());
+    const float inset = glyph * 0.12f;
+    const ImVec2 center(min.x + size * 0.5f, min.y + size * 0.5f);
+    const ImVec2 a(center.x - glyph * 0.5f + inset, center.y - glyph * 0.5f + inset);
+    const ImVec2 b(center.x + glyph * 0.5f - inset, center.y + glyph * 0.5f - inset);
+    const float w = b.x - a.x;
+    const float h = b.y - a.y;
+    // 外形。右上の角だけ落とす（フロッピーの切り欠き）。
+    const float notch = w * 0.22f;
+    draw->PathClear();
+    draw->PathLineTo(a);
+    draw->PathLineTo(ImVec2(b.x - notch, a.y));
+    draw->PathLineTo(ImVec2(b.x, a.y + notch));
+    draw->PathLineTo(b);
+    draw->PathLineTo(ImVec2(a.x, b.y));
+    draw->PathStroke(color, ImDrawFlags_Closed, thickness);
+    // 上のシャッター（中央上に空いた口）。
+    draw->AddRect(ImVec2(a.x + w * 0.25f, a.y), ImVec2(b.x - w * 0.30f, a.y + h * 0.32f), color, 0.0f,
+                  ImDrawFlags_None, thickness);
+    // 下のラベル。塗りつぶして重心を下に置く。
+    draw->AddRectFilled(ImVec2(a.x + w * 0.20f, b.y - h * 0.36f), ImVec2(b.x - w * 0.20f, b.y), color);
+    return clicked;
+}
+
+ImU32 WarnColor() {
+    return ImGui::GetColorU32(kWarn);
+}
+
+ImU32 ErrorColor() {
+    return ImGui::GetColorU32(kError);
+}
+
+float Scaled(float value) {
+    return value * g_dpiScale;
+}
+
+float FontScale() {
+    // FontSizeBase は ImGuiLayer が設定から入れる。0 は「まだ入れていない」なので等倍。
+    const float base = ImGui::GetStyle().FontSizeBase;
+    return (base > 0.0f) ? (base / kDefaultFontSize) : 1.0f;
+}
+
+float TextScaled(float value) {
+    return value * g_dpiScale * FontScale();
+}
+
+namespace { ImVec4 g_transformAxisColors[3]; }
+ImU32 TransformAxisColor(int axis) { return ImGui::ColorConvertFloat4ToU32(g_transformAxisColors[std::clamp(axis,0,2)]); }
+void ApplyTheme(float dpiScale) {
+    g_transformAxisColors[0]=ImVec4(0.886f,0.376f,0.376f,1);
+    g_transformAxisColors[1]=ImVec4(0.376f,0.82f,0.49f,1);
+    g_transformAxisColors[2]=ImVec4(0.376f,0.573f,0.886f,1);
+    g_dpiScale = (dpiScale > 0.0f) ? dpiScale : 1.0f;
+
+    // 拡大率を変えて呼び直しても累積しないよう、毎回既定値から作り直す。
+    // ScaleAllSizes は「現在の値に掛ける」ので、リセット無しだと 125% → 150% の
+    // ような変更で、下で上書きしていない寸法だけが二重に拡大されてしまう。
+    ImGui::GetStyle() = ImGuiStyle{};
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    // 角丸は部品にだけ付ける。面の階層は明度で作り、形では作らない。
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 4.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 6.0f;
+    style.GrabRounding = 3.0f;
+    // タブはフレームと同じ丸み。丸まるのは上の 2 つの角だけなので、帯の上に板が並ぶ見え方は保てる。
+    style.TabRounding = 4.0f;
+    style.ScrollbarRounding = 6.0f;
+
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
+
+    style.WindowPadding = ImVec2(10.0f, 8.0f);
+    style.FramePadding = ImVec2(7.0f, 4.0f);
+    style.CellPadding = ImVec2(4.0f, 3.0f);
+    style.ItemSpacing = ImVec2(8.0f, 5.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.ScrollbarSize = 12.0f;
+    style.GrabMinSize = 9.0f;
+
+    style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+    style.SeparatorTextBorderSize = 1.0f;
+    style.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
+    style.SeparatorTextPadding = ImVec2(14.0f, 4.0f);
+
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = kText;
+    colors[ImGuiCol_TextDisabled] = kTextDisabled;
+    colors[ImGuiCol_WindowBg] = kWindowBg;
+    colors[ImGuiCol_ChildBg] = kPanelBg;
+    colors[ImGuiCol_PopupBg] = kPanelBg;
+    colors[ImGuiCol_Border] = kBorder;
+    colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    colors[ImGuiCol_FrameBg] = kFrameBg;
+    colors[ImGuiCol_FrameBgHovered] = kFrameBgHovered;
+    colors[ImGuiCol_FrameBgActive] = kFrameBgActive;
+
+    // **ドックのタブを並べる帯もここで決まる**（ImGui はタブバーの下地に
+    // TitleBg / TitleBgActive を使う）。フォーカスで明度を変えない。
+    // 変えると、タブそのものの明度差（非選択 / 選択）が読み取りにくくなる。
+    colors[ImGuiCol_TitleBg] = kTitleBg;
+    colors[ImGuiCol_TitleBgActive] = kTitleBg;
+    colors[ImGuiCol_TitleBgCollapsed] = kTitleBg;
+    colors[ImGuiCol_MenuBarBg] = kTitleBg;
+
+    colors[ImGuiCol_ScrollbarBg] = kWindowBg;
+    colors[ImGuiCol_ScrollbarGrab] = Gray(0.290f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = Gray(0.353f);
+    colors[ImGuiCol_ScrollbarGrabActive] = Gray(0.424f);
+
+    colors[ImGuiCol_CheckMark] = kAccent;
+    colors[ImGuiCol_SliderGrab] = kGrab;
+    colors[ImGuiCol_SliderGrabActive] = kGrabActive;
+
+    colors[ImGuiCol_Button] = kFrameBg;
+    colors[ImGuiCol_ButtonHovered] = kFrameBgHovered;
+    colors[ImGuiCol_ButtonActive] = kFrameBgActive;
+
+    colors[ImGuiCol_Header] = kHeaderBg;
+    colors[ImGuiCol_HeaderHovered] = kHeaderHovered;
+    colors[ImGuiCol_HeaderActive] = kHeaderActive;
+
+    colors[ImGuiCol_Separator] = kSeparator;
+    colors[ImGuiCol_SeparatorHovered] = Gray(0.318f);
+    colors[ImGuiCol_SeparatorActive] = kAccent;
+
+    colors[ImGuiCol_ResizeGrip] = Gray(0.255f, 0.6f);
+    colors[ImGuiCol_ResizeGripHovered] = Gray(0.353f, 0.8f);
+    colors[ImGuiCol_ResizeGripActive] = kAccent;
+
+    // **フォーカスの有無でタブの色を変えない**（Dimmed も同じ値にする）。
+    // 見たいのは「どのタブを開いているか」で、枠がアクティブかどうかではない。
+    colors[ImGuiCol_Tab] = kTab;
+    colors[ImGuiCol_TabHovered] = kTabHovered;
+    colors[ImGuiCol_TabSelected] = kTabSelected;
+    colors[ImGuiCol_TabSelectedOverline] = kTabOverline;
+    colors[ImGuiCol_TabDimmed] = kTab;
+    colors[ImGuiCol_TabDimmedSelected] = kTabSelected;
+    colors[ImGuiCol_TabDimmedSelectedOverline] = kTabOverline;
+
+    colors[ImGuiCol_DockingPreview] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.35f);
+    colors[ImGuiCol_DockingEmptyBg] = kWindowBg;
+
+    colors[ImGuiCol_TableHeaderBg] = kHeaderBg;
+    colors[ImGuiCol_TableBorderStrong] = kBorder;
+    colors[ImGuiCol_TableBorderLight] = kSeparator;
+    colors[ImGuiCol_TableRowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    colors[ImGuiCol_TableRowBgAlt] = Gray(1.0f, 0.02f);
+
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.35f);
+    colors[ImGuiCol_NavCursor] = kAccent;
+    colors[ImGuiCol_DragDropTarget] = kAccent;
+    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.45f);
+
+    colors[ImGuiCol_PlotLines] = kGrab;
+    colors[ImGuiCol_PlotLinesHovered] = kAccent;
+    colors[ImGuiCol_PlotHistogram] = kGrab;
+    colors[ImGuiCol_PlotHistogramHovered] = kAccent;
+
+    // 余白と枠は最後にまとめて DPI へ合わせる。色はスケールの影響を受けない。
+    // 既定値から作り直しているので、100% へ戻す方向でも常に掛けてよい。
+    style.ScaleAllSizes(g_dpiScale);
+}
+
+bool BeginPropertyTable(const char* id, const char* widestLabel) {
+    if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp)) {
+        return false;
+    }
+    // ラベル列は文字が入る幅なので、文字サイズにも追従させる（大きくして切れないように）。
+    const float baseWidth = TextScaled(CurrentLanguage() == Language::English ? kLabelColumnWidthEnglish
+                                                                              : kLabelColumnWidth);
+    const float labelWidth = widestLabel ? std::max(baseWidth,
+        ImGui::CalcTextSize(widestLabel).x + ImGui::CalcTextSize("：").x) : baseWidth;
+    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
+    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+    return true;
+}
+
+void EndPropertyTable() {
+    ImGui::EndTable();
+}
+
+void SectionHeader(const char* label) {
+    ImGui::SeparatorText(label);
+}
+
+namespace {
+
+// 「?」の印を size 角で描く。coverLine が真なら、下を通る線（見出しの罫線）を地の色で隠す。
+void DrawHelpMarker(const char* help, float size, bool coverLine) {
+    ImGui::PushID(help);
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##help", ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 center(min.x + size * 0.5f, min.y + size * 0.5f);
+    const float radius = size * 0.42f;
+    if (coverLine) {
+        draw->AddCircleFilled(center, radius + Scaled(2.0f), ImGui::GetColorU32(ImGuiCol_WindowBg));
+    }
+    const ImU32 color = ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    draw->AddCircle(center, radius, color, 0, Scaled(1.0f));
+    // 「?」は ASCII の字形なので、どのフォントでも出る。
+    const ImVec2 glyph = ImGui::CalcTextSize("?");
+    draw->AddText(ImVec2(center.x - glyph.x * 0.5f, center.y - glyph.y * 0.5f), color, "?");
+    if (hovered) {
+        WrappedTooltip(help);
+    }
+    ImGui::PopID();
+}
+
+}  // namespace
+
+void SectionHeader(const char* label, const char* help) {
+    ImGui::SeparatorText(label);
+    if (help == nullptr || help[0] == '\0') {
+        return;
+    }
+    // 見出しの文字のすぐ右に印を重ねる（行は増やさない）。SeparatorText は左寄せ
+    // （SeparatorTextAlign.x = 0）なので、文字は左端から SeparatorTextPadding.x の所に出る。
+    const ImVec2 after = ImGui::GetCursorScreenPos();
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float size = ImGui::GetTextLineHeight();
+    const float x = min.x + style.SeparatorTextPadding.x + ImGui::CalcTextSize(label).x + style.ItemInnerSpacing.x;
+    ImGui::SetCursorScreenPos(ImVec2(x, min.y + (max.y - min.y - size) * 0.5f));
+    DrawHelpMarker(help, size, true);
+    ImGui::SetCursorScreenPos(after);
+}
+
+void PropertyLabel(const char* label, const char* tooltip) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    // 「パラメータ名：値」と読めるよう、ラベルの末尾にコロンを付ける。
+    ImGui::Text("%s：", label);
+    DrawTooltip(tooltip);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::PushID(label);
+}
+
+void PropertyLabelEmpty(const char* id) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TableSetColumnIndex(1);
+    ImGui::PushID(id);
+}
+
+void PropertyEnd() {
+    ImGui::PopID();
+}
+
+namespace {
+
+// Ctrl + クリックの直接入力は、**Enter で確定するまで値を書き戻さない。**
+//
+// ImGui は打つたびに値を適用するので、そのままだと「1」「12」「120」と途中の値で
+// 合成が走り、打っている最中に画面が切り替わる。スライダーには値の写しを渡し、
+// 入力中はその写しを ImGui の状態置き場に控えておいて、入力が終わったフレーム
+// （Enter / フォーカスを外した）で 1 回だけ書き戻す。Esc で取り消したときは書き戻さない。
+// ドラッグやキーボードでの変更（直接入力ではない）は今までどおりその場で書き戻す。
+//
+// 直前に置いたスライダーについて呼ぶこと（GetItemID / IsItemDeactivatedAfterEdit を見る）。
+template <typename T>
+bool CommitDeferredInput(T* value, T shown, bool edited, T minValue, T maxValue) {
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    const ImGuiID id = ImGui::GetItemID();
+    const ImGuiID typingKey = id ^ 0x5F0F1A2Bu;
+    const ImGuiID valueKey = id ^ 0x2C6D9E45u;
+    const auto store = [&](T v) {
+        if constexpr (std::is_same_v<T, float>) {
+            storage->SetFloat(valueKey, v);
+        } else {
+            storage->SetInt(valueKey, v);
+        }
+    };
+    const auto load = [&](T fallback) -> T {
+        if constexpr (std::is_same_v<T, float>) {
+            return storage->GetFloat(valueKey, fallback);
+        } else {
+            return storage->GetInt(valueKey, fallback);
+        }
+    };
+
+    if (ImGui::TempInputIsActive(id)) {
+        if (!storage->GetBool(typingKey, false)) {
+            storage->SetBool(typingKey, true);
+            store(*value);
+        }
+        if (edited) {
+            store(shown);
+        }
+        return false;
+    }
+    if (storage->GetBool(typingKey, false)) {
+        // 直前まで打っていた。このフレームで入力が終わった。
+        storage->SetBool(typingKey, false);
+        // Esc は取り消し。ImGui は文字列を元へ戻すだけで「編集した」印は残るので、
+        // 押されたキーで見分ける。
+        if (!ImGui::IsItemDeactivatedAfterEdit() || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            return false;
+        }
+        const T typed = edited ? shown : load(*value);
+        const T next = std::clamp(typed, minValue, maxValue);
+        if (next == *value) {
+            return false;
+        }
+        *value = next;
+        return true;
+    }
+    if (edited) {
+        *value = shown;
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+bool RevealSourceButton(bool enabled, const char* tooltip) {
+    const float size = ImGui::GetFrameHeight();
+    ImGui::BeginDisabled(!enabled);
+    const bool clicked = ImGui::Button("##revealSource", ImVec2(size, size));
+    const auto origin = ImGui::GetItemRectMin();
+    const auto point = [&](float x, float y) { return ImVec2(origin.x + size*x, origin.y + size*y); };
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto color = ImGui::GetColorU32(ImGuiCol_Text);
+    const float thickness = Scaled(1.2f);
+    // 枠から右上へ向かう矢印。フォントに依存しない単純な輪郭。
+    draw->AddLine(point(.25f,.25f), point(.25f,.75f), color, thickness);
+    draw->AddLine(point(.25f,.75f), point(.75f,.75f), color, thickness);
+    draw->AddLine(point(.75f,.75f), point(.75f,.60f), color, thickness);
+    draw->AddLine(point(.25f,.25f), point(.40f,.25f), color, thickness);
+    draw->AddLine(point(.45f,.55f), point(.78f,.22f), color, thickness);
+    draw->AddLine(point(.55f,.22f), point(.78f,.22f), color, thickness);
+    draw->AddLine(point(.78f,.22f), point(.78f,.45f), color, thickness);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort))
+        ImGui::SetTooltip("%s", tooltip);
+    return clicked;
+}
+
+void UnsavedMark(const char* tooltip, float size) {
+    if (size <= 0.0f) size = ImGui::GetFrameHeight();
+    ImGui::Dummy(ImVec2(size, size));
+    const auto origin = ImGui::GetItemRectMin();
+    // 丸の大きさは枠に関わらず一定（フレームの高さ基準）。枠を小さくしても印が痩せない。
+    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(origin.x + size * 0.5f, origin.y + size * 0.5f),
+                                                ImGui::GetFrameHeight() * 0.2f, ImGui::GetColorU32(ImGuiCol_CheckMark));
+    if (tooltip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
+}
+
+namespace {
+std::vector<PropertyRecord>* g_propertyRecorder = nullptr;
+
+void RecordProperty(PropertyRecord::Type type, const char* label, const char* tooltip, void* value,
+                    double shown, double minValue, double maxValue, double defaultValue,
+                    const char* format = "", bool logarithmic = false) {
+    if (g_propertyRecorder == nullptr) return;
+    PropertyRecord record;
+    record.type = type;
+    record.label = label != nullptr ? label : "";
+    record.tooltip = tooltip != nullptr ? tooltip : "";
+    record.format = format != nullptr ? format : "";
+    record.value = value;
+    record.shown = shown;
+    record.minValue = minValue;
+    record.maxValue = maxValue;
+    record.defaultValue = defaultValue;
+    record.logarithmic = logarithmic;
+    g_propertyRecorder->push_back(std::move(record));
+}
+}  // namespace
+
+void SetPropertyRecorder(std::vector<PropertyRecord>* recorder) {
+    g_propertyRecorder = recorder;
+}
+
+bool PropertyFloat(const char* label, float* value, float minValue, float maxValue,
+                   float defaultValue, const char* tooltip, const char* format,
+                   ImGuiSliderFlags flags, float snapStep) {
+    RecordProperty(PropertyRecord::Type::Float, label, tooltip, value, *value, minValue, maxValue,
+                   defaultValue, format, (flags & ImGuiSliderFlags_Logarithmic) != 0);
+    // 読み込み直後の範囲外値を UI 側で吸収する。
+    *value = std::clamp(*value, minValue, maxValue);
+
+    PropertyLabel(label, NumericTooltip(tooltip));
+    ImGui::SetNextItemWidth(ValueWidth(kSliderMinWidth, kSliderMaxWidth));
+    float shown = *value;
+    const bool edited = ImGui::SliderFloat("##value", &shown, minValue, maxValue, format, flags);
+
+    // ドラッグ中だけ刻みへ吸着させる。マウスを押していないときの変更
+    // （Ctrl + クリックの直接入力、キーボード）は丸めない。
+    if (edited && snapStep > 0.0f && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        shown = std::clamp(std::round(shown / snapStep) * snapStep, minValue, maxValue);
+    }
+    bool changed = CommitDeferredInput(value, shown, edited, minValue, maxValue);
+
+    // 既定値の文字列は、ツールチップを出すとき（ホバー中）だけ作る。
+    // 行ごと・フレームごとに書式化すると、パネルが多いときに無駄が積み上がる。
+    bool resetHovered = false;
+    const bool resetPressed = ResetDotCore(NearlyEqual(*value, defaultValue), resetHovered);
+    if (resetHovered) {
+        ResetTooltip(FormatFloat(defaultValue, format).c_str());
+    }
+    if (resetPressed) {
+        *value = std::clamp(defaultValue, minValue, maxValue);
+        changed = true;
+    }
+    PropertyEnd();
+    return changed;
+}
+
+bool PropertyInt(const char* label, int* value, int minValue, int maxValue, int defaultValue,
+                 const char* tooltip) {
+    RecordProperty(PropertyRecord::Type::Int, label, tooltip, value, *value, minValue, maxValue, defaultValue);
+    *value = std::clamp(*value, minValue, maxValue);
+
+    PropertyLabel(label, NumericTooltip(tooltip));
+    ImGui::SetNextItemWidth(ValueWidth(kSliderMinWidth, kSliderMaxWidth));
+    int shown = *value;
+    // SliderInt の対応範囲を超える個数は、ドラッグと直接入力で編集する。
+    const bool wideRange = minValue < std::numeric_limits<int>::min() / 2 ||
+                           maxValue > std::numeric_limits<int>::max() / 2;
+    const bool edited = wideRange
+        ? ImGui::DragInt("##value", &shown, 1.0f, minValue, maxValue)
+        : ImGui::SliderInt("##value", &shown, minValue, maxValue);
+    bool changed = CommitDeferredInput(value, shown, edited, minValue, maxValue);
+
+    bool resetHovered = false;
+    const bool resetPressed = ResetDotCore(*value == defaultValue, resetHovered);
+    if (resetHovered) {
+        ResetTooltip(std::to_string(defaultValue).c_str());
+    }
+    if (resetPressed) {
+        *value = std::clamp(defaultValue, minValue, maxValue);
+        changed = true;
+    }
+    PropertyEnd();
+    return changed;
+}
+
+bool PropertyBool(const char* label, bool* value, bool defaultValue, const char* tooltip) {
+    RecordProperty(PropertyRecord::Type::Bool, label, tooltip, value, *value ? 1.0 : 0.0, 0.0, 1.0,
+                   defaultValue ? 1.0 : 0.0);
+    PropertyLabel(label, tooltip);
+    bool changed = ImGui::Checkbox("##value", value);
+
+    if (ResetDot(*value == defaultValue, defaultValue ? Tr("オン", "On") : Tr("オフ", "Off"))) {
+        *value = defaultValue;
+        changed = true;
+    }
+    PropertyEnd();
+    return changed;
+}
+
+namespace {
+
+// 色の行の実体。linear が真なら、値はリニアで持ちピッカーへは sRGB で見せる。
+//
+// **編集されたときだけ書き戻す。** 毎フレーム sRGB へ出して戻すと、
+// 変換の丸め誤差が少しずつ積もって値が動いてしまう。
+bool PropertyColorImpl(const char* label, float* rgb, const float* defaultRgb,
+                       const char* tooltip, bool linear) {
+    RecordProperty(PropertyRecord::Type::Color, label, tooltip, rgb, 0.0, 0.0, 1.0, 0.0,
+                   linear ? "linear" : "srgb");
+    PropertyLabel(label, tooltip);
+
+    float shown[3];
+    for (int i = 0; i < 3; ++i) {
+        shown[i] = linear ? LinearToSrgb(rgb[i]) : rgb[i];
+    }
+
+    ImGui::SetNextItemWidth(ValueWidth(kSliderMinWidth, kSliderMaxWidth));
+    bool changed = ImGui::ColorEdit3("##value", shown,
+                                     ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
+    if (changed) {
+        for (int i = 0; i < 3; ++i) {
+            rgb[i] = linear ? SrgbToLinear(shown[i]) : shown[i];
+        }
+    }
+
+    // 既定かどうかは格納している値どうしで見る（変換を挟むと丸めで揺れる）。
+    const bool isDefault = NearlyEqual(rgb[0], defaultRgb[0]) &&
+                           NearlyEqual(rgb[1], defaultRgb[1]) &&
+                           NearlyEqual(rgb[2], defaultRgb[2]);
+    bool resetHovered = false;
+    const bool resetPressed = ResetDotCore(isDefault, resetHovered);
+    if (resetHovered) {
+        // 出す数字はピッカーに合わせる。リニア値を出しても、
+        // ピッカーに見えている数字と違うので手掛かりにならない。
+        // 変換と書式化は、ツールチップを出すとき（ホバー中）だけ行う。
+        char defaultText[64] = {};
+        std::snprintf(defaultText, sizeof(defaultText), "%.2f, %.2f, %.2f",
+                      linear ? LinearToSrgb(defaultRgb[0]) : defaultRgb[0],
+                      linear ? LinearToSrgb(defaultRgb[1]) : defaultRgb[1],
+                      linear ? LinearToSrgb(defaultRgb[2]) : defaultRgb[2]);
+        ResetTooltip(defaultText);
+    }
+    if (resetPressed) {
+        rgb[0] = defaultRgb[0];
+        rgb[1] = defaultRgb[1];
+        rgb[2] = defaultRgb[2];
+        changed = true;
+    }
+    PropertyEnd();
+    return changed;
+}
+
+}  // namespace
+
+bool PropertyColor(const char* label, float* rgb, const float* defaultRgb, const char* tooltip) {
+    return PropertyColorImpl(label, rgb, defaultRgb, tooltip, false);
+}
+
+bool PropertyColorLinear(const char* label, float* linearRgb, const float* defaultLinearRgb,
+                         const char* tooltip) {
+    return PropertyColorImpl(label, linearRgb, defaultLinearRgb, tooltip, true);
+}
+
+bool PropertyCombo(const char* label, int* value, const char* const items[], int itemCount,
+                   int defaultValue, const char* tooltip) {
+    if (itemCount <= 0) {
+        return false;
+    }
+    RecordProperty(PropertyRecord::Type::Combo, label, tooltip, value, *value, 0, itemCount - 1, defaultValue);
+    if (g_propertyRecorder != nullptr) g_propertyRecorder->back().items.assign(items, items + itemCount);
+    *value = std::clamp(*value, 0, itemCount - 1);
+
+    PropertyLabel(label, tooltip);
+    ImGui::SetNextItemWidth(ValueWidth(kSliderMinWidth, kComboMaxWidth));
+    bool changed = ImGui::Combo("##value", value, items, itemCount);
+
+    if (ResetDot(*value == defaultValue, items[std::clamp(defaultValue, 0, itemCount - 1)])) {
+        *value = std::clamp(defaultValue, 0, itemCount - 1);
+        changed = true;
+    }
+    PropertyEnd();
+    return changed;
+}
+
+bool PropertyTextInput(const char* label, char* buffer, size_t bufferSize, const char* tooltip) {
+    PropertyLabel(label, tooltip);
+    ImGui::SetNextItemWidth(
+        std::min(TextScaled(kTextInputWidth), ImGui::GetContentRegionAvail().x));
+    // 入力中は ImGui が内部バッファで表示し、終えたときに buffer へ書き戻す。
+    // 呼び出し側が毎フレーム buffer を作り直していても、終えたフレームには確定した文字列が入る。
+    ImGui::InputText("##value", buffer, bufferSize);
+    const bool committed = ImGui::IsItemDeactivatedAfterEdit();
+    PropertyEnd();
+    return committed;
+}
+
+bool PropertyTextMultiline(const char* label, std::string& text, int lines, const char* tooltip) {
+    PropertyLabel(label, tooltip);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float lineHeight = ImGui::GetTextLineHeight();
+    // 欄の高さは中の文字に合わせる（スクロールさせない）。折り返した後の行数で決め、lines 行より低くはしない。
+    // 入力中の文字列は ImGui が内部で持つので、描いた後に測った高さを覚えておき、次のフレームで使う。
+    const ImGuiID heightKey = ImGui::GetID("##valueHeight");
+    const auto measure = [&](const std::string& value) {
+        // 折り返す幅は欄の内側。測り方の差で 1 行足りずにスクロールバーが出ないよう、少し狭く見積もる。
+        const float wrapWidth = std::max(width - style.FramePadding.x * 2.0f - lineHeight * 0.5f, lineHeight);
+        float textHeight = value.empty() ? 0.0f : ImGui::CalcTextSize(value.c_str(), nullptr, false, wrapWidth).y;
+        // 末尾の改行の次の行（これから打つ行）も数える。
+        if (!value.empty() && value.back() == '\n') textHeight += lineHeight;
+        return std::max(textHeight, lineHeight * static_cast<float>(std::max(lines, 1))) + style.FramePadding.y * 2.0f;
+    };
+    const float height = ImGui::GetStateStorage()->GetFloat(heightKey, measure(text));
+    // 入力中は ImGui が内部バッファで持ち、終えたときに text へ書き戻す。
+    std::string edited = text;
+    ImGui::InputTextMultiline("##value", &edited, ImVec2(width, height), ImGuiInputTextFlags_WordWrap);
+    const bool committed = ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::GetStateStorage()->SetFloat(heightKey, measure(edited));
+    if (committed) text = edited;
+    PropertyEnd();
+    return committed;
+}
+
+void PropertyValue(const char* label, const char* format, ...) {
+    PropertyLabel(label, nullptr);
+    va_list args;
+    va_start(args, format);
+    ImGui::TextV(format, args);
+    va_end(args);
+    PropertyEnd();
+}
+
+bool Button(const char* label, float width) {
+    return ImGui::Button(label, ImVec2(TextScaled(width), 0.0f));
+}
+
+namespace {
+
+// 名前を width に収まる 2 行へ割る。
+//
+// **行数は常に 2 で固定する。** 名前の長さで行数が変わると、
+// 一覧の升目の高さが揃わずに段がガタつく。
+// 収まらないぶんは中央を省略し、**先頭と末尾の両方を残す**。
+// `T_Rocky_Soil_..._BaseColor` と `..._Normal` のように、
+// 素材名は先頭、マップの種別は末尾に入るため、
+// 片側だけ残すと同じ表示になって見分けられない。
+std::array<std::string, 2> SplitCaptionLines(const char* text, float width) {
+    std::array<std::string, 2> lines;
+
+    // UTF-8 の途中で切らないよう、文字の先頭バイト位置を集めておく。
+    std::vector<size_t> starts;
+    for (size_t i = 0; text[i] != 0; ++i) {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) {
+            starts.push_back(i);
+        }
+    }
+    starts.push_back(std::strlen(text));
+    const size_t charCount = starts.size() - 1;
+
+    // 1 行目: 先頭から入るだけ。
+    size_t head = 0;
+    while (head < charCount) {
+        const std::string candidate(text, starts[head + 1]);
+        if (ImGui::CalcTextSize(candidate.c_str()).x > width) {
+            break;
+        }
+        ++head;
+    }
+    lines[0].assign(text, starts[head]);
+    if (head == charCount) {
+        return lines;  // 1 行で収まった。
+    }
+
+    // 2 行目: 残りが入るならそのまま。入らなければ末尾を残して中央を省略する。
+    const std::string rest(text + starts[head]);
+    if (ImGui::CalcTextSize(rest.c_str()).x <= width) {
+        lines[1] = rest;
+        return lines;
+    }
+
+    static const char* const kEllipsis = "…";
+    size_t tail = 0;
+    while (head + tail < charCount) {
+        const std::string candidate =
+            std::string(kEllipsis) + std::string(text + starts[charCount - tail - 1]);
+        if (ImGui::CalcTextSize(candidate.c_str()).x > width) {
+            break;
+        }
+        ++tail;
+    }
+    lines[1] = std::string(kEllipsis) + std::string(text + starts[charCount - tail]);
+    return lines;
+}
+
+// SplitCaptionLines の結果の控え。
+//
+// 一覧は同じ名前を毎フレーム描く。割るには 1 文字ずつ伸ばしながら幅を測るので、
+// 升目の数 × 文字数ぶんの計測と文字列の確保が毎フレーム走っていた。名前ごとに控えておき、
+// 割り方が変わる条件（幅・フォント・文字の大きさ）が違うときだけ割り直す。
+struct CaptionCacheEntry {
+    float width = -1.0f;
+    float fontSize = 0.0f;
+    const ImFont* font = nullptr;
+    std::array<std::string, 2> lines;
+};
+
+const std::array<std::string, 2>& CachedCaptionLines(const char* text, float width) {
+    // 名前を変えたり削除したりした分が残り続けないよう、増えすぎたら捨てて作り直す。
+    constexpr size_t kMaxEntries = 4096;
+    static std::map<std::string, CaptionCacheEntry, std::less<>> cache;
+
+    const std::string_view key(text);
+    auto found = cache.find(key);
+    if (found == cache.end()) {
+        if (cache.size() >= kMaxEntries) {
+            cache.clear();
+        }
+        found = cache.emplace(std::string(key), CaptionCacheEntry{}).first;
+    }
+
+    CaptionCacheEntry& entry = found->second;
+    const ImFont* font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    if (entry.width != width || entry.fontSize != fontSize || entry.font != font) {
+        entry.lines = SplitCaptionLines(text, width);
+        entry.width = width;
+        entry.fontSize = fontSize;
+        entry.font = font;
+    }
+    return entry.lines;
+}
+
+}  // namespace
+
+std::string EllipsizeMiddle(const char* text, float width) {
+    if (text == nullptr) return {};
+    if (ImGui::CalcTextSize(text).x <= width) return text;
+    std::vector<size_t> starts;
+    for (size_t i = 0; text[i] != 0; ++i) {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) starts.push_back(i);
+    }
+    starts.push_back(std::strlen(text));
+    const size_t charCount = starts.size() - 1;
+    static const char* const kEllipsis = "…";
+    // 先頭と末尾を交互に伸ばし、入らなくなる直前で止める。
+    size_t head = 0, tail = 0;
+    for (bool growHead = true; head + tail < charCount; growHead = !growHead) {
+        const size_t nextHead = head + (growHead ? 1 : 0);
+        const size_t nextTail = tail + (growHead ? 0 : 1);
+        const std::string candidate = std::string(text, starts[nextHead]) + kEllipsis +
+                                      std::string(text + starts[charCount - nextTail]);
+        if (ImGui::CalcTextSize(candidate.c_str()).x > width) break;
+        head = nextHead;
+        tail = nextTail;
+    }
+    return std::string(text, starts[head]) + kEllipsis + std::string(text + starts[charCount - tail]);
+}
+
+bool VerticalSplitter(const char* id, float* width, float minWidth, float maxWidth, float height) {
+    if (width == nullptr || height <= 0.0f) return false;
+    ImGui::InvisibleButton(id, ImVec2(Scaled(kSplitterGrabWidth), height));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const bool released = ImGui::IsItemDeactivated();
+    if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (active) *width = std::clamp(*width + ImGui::GetIO().MouseDelta.x, minWidth, maxWidth);
+    const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const float center = (min.x + max.x) * 0.5f;
+    const auto color = ImGui::GetColorU32(active ? ImGuiCol_SeparatorActive :
+                                        hovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator);
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(center, min.y), ImVec2(center, max.y), color, Scaled(1.0f));
+    return released;
+}
+
+namespace {
+char g_comboFilter[96] = {};
+
+// ASCII だけ小文字へ揃える（日本語はそのまま部分一致で比べる）。
+char LowerAscii(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+}  // namespace
+
+void ComboFilterInput() {
+    if (ImGui::IsWindowAppearing()) {
+        g_comboFilter[0] = '\0';
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##comboFilter", Tr("名前で絞り込む", "Filter by name"), g_comboFilter, sizeof(g_comboFilter));
+    ImGui::Separator();
+}
+
+bool ComboFilterPass(std::string_view text) {
+    if (g_comboFilter[0] == '\0') return true;
+    // 項目ごとに毎フレーム呼ばれるので、小文字にした写しを作らずにその場で比べる。
+    const std::string_view filter(g_comboFilter);
+    return std::search(text.begin(), text.end(), filter.begin(), filter.end(),
+                       [](char a, char b) { return LowerAscii(a) == LowerAscii(b); }) != text.end();
+}
+
+bool ComboFilterActive() { return g_comboFilter[0] != '\0'; }
+
+bool FlushSplitter(const char* id, bool vertical, float* size, float minSize, float maxSize, float length) {
+    if (size == nullptr || length <= 0.0f) return false;
+    const float grab = Scaled(kSplitterGrabWidth);
+    ImGui::InvisibleButton(id, vertical ? ImVec2(grab, length) : ImVec2(length, grab));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    const bool released = ImGui::IsItemDeactivated();
+    if (hovered || active) ImGui::SetMouseCursor(vertical ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+    if (active) {
+        const ImVec2 delta = ImGui::GetIO().MouseDelta;
+        *size = std::clamp(*size + (vertical ? delta.x : delta.y), minSize, std::max(minSize, maxSize));
+    }
+    const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+    const ImU32 color = ImGui::GetColorU32(active ? ImGuiCol_SeparatorActive :
+                                           hovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator);
+    const float thickness = Scaled(1.0f);
+    if (vertical) ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, min.y), ImVec2(min.x, max.y), color, thickness);
+    else ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, min.y), ImVec2(max.x, min.y), color, thickness);
+    return released;
+}
+
+bool HorizontalSplitter(const char* id, float* height, float minHeight, float maxHeight,
+                        float width) {
+    if (height == nullptr || width <= 0.0f) {
+        return false;
+    }
+
+    // 掴む高さは線より広く取る。線と同じ太さだと狙って掴めない。
+    // さらに上下へ余白を空ける。**詰めると隣の区画の枠が線に貼り付いて窮屈に見える。**
+    const float grabHeight = Scaled(kSplitterGrabWidth);
+    const float margin = Scaled(kSplitterMargin);
+    // **余白は Dummy ではなくカーソルの直接指定で空ける。**
+    // Dummy を挟むと ItemSpacing がもう 1 つ余分に入り、境界の位置が
+    // 呼び出し側の想定（区画の下 + margin）からずれる。
+    // 直前のアイテムの後でカーソルには既に ItemSpacing.y が乗っているので、その差だけ足す。
+    const float spacing = ImGui::GetStyle().ItemSpacing.y;
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin - spacing);
+    ImGui::InvisibleButton(id, ImVec2(width, grabHeight));
+
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    // **離したかどうかはここで拾う。** 後ろの Dummy もアイテムなので、
+    // 最後まで待つと IsItemDeactivated がそちらを指してしまう。
+    const bool released = ImGui::IsItemDeactivated();
+    if (hovered || active) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    }
+    if (active) {
+        *height = std::clamp(*height + ImGui::GetIO().MouseDelta.y, minHeight, maxHeight);
+    }
+
+    // 線は掴める高さの中央へ 1 本。掴めることが分かる程度に留める。
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    const float centerY = (min.y + max.y) * 0.5f;
+    const ImU32 color = ImGui::GetColorU32(active      ? ImGuiCol_SeparatorActive
+                                           : hovered   ? ImGuiCol_SeparatorHovered
+                                                       : ImGuiCol_Separator);
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, centerY), ImVec2(max.x, centerY), color,
+                                        Scaled(1.0f));
+
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + margin - spacing);
+    return released;
+}
+
+void GridCaption(const char* text, float width) {
+    if (text == nullptr) {
+        return;
+    }
+    // 名前も現在の標準UIフォントサイズで描く。
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+
+    // 2 行目が空でも行は描く。**空行を飛ばすと升目の高さが揃わない。**
+    for (const std::string& line : CachedCaptionLines(text, width)) {
+        // サムネイルの幅の中で中央へ寄せる。左詰めだと升目の並びが揺れて見える。
+        const float textWidth = ImGui::CalcTextSize(line.c_str()).x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (width - textWidth) * 0.5f));
+        ImGui::TextUnformatted(line.empty() ? " " : line.c_str());
+    }
+
+    ImGui::PopStyleColor();
+}
+
+CaptionEdit InlineNameInput(const char* id, char* buffer, size_t bufferSize, float width, bool* focus) {
+    ImGui::SetNextItemWidth(width);
+    if (*focus) ImGui::SetKeyboardFocusHere();
+    const bool enter = ImGui::InputText(id, buffer, bufferSize,
+                                        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if (ImGui::IsItemActive()) *focus = false;
+    CaptionEdit result = CaptionEdit::Editing;
+    if (enter) result = CaptionEdit::Commit;
+    // 外をクリックして離れたら確定、Esc なら取り消し（エクスプローラと同じ）。
+    else if (ImGui::IsItemDeactivated()) result = ImGui::IsKeyPressed(ImGuiKey_Escape, false) ? CaptionEdit::Cancel : CaptionEdit::Commit;
+    return result;
+}
+
+CaptionEdit GridCaptionInput(const char* id, char* buffer, size_t bufferSize, float width, bool* focus) {
+    const float startY = ImGui::GetCursorPosY();
+    const CaptionEdit result = InlineNameInput(id, buffer, bufferSize, width, focus);
+    // GridCaption の 2 行ぶんに高さを揃える。
+    const float spacing = ImGui::GetStyle().ItemSpacing.y;
+    const float rest = 2.0f * ImGui::GetTextLineHeightWithSpacing() - (ImGui::GetCursorPosY() - startY) - spacing;
+    if (rest > 0.0f) ImGui::Dummy(ImVec2(width, rest));
+    return result;
+}
+
+void HelpMarker(const char* help) {
+    if (help == nullptr || help[0] == '\0') {
+        return;
+    }
+    const float size = ImGui::GetTextLineHeight();
+    // 同じ行の前の部品（文字やボタン）の縦の中心に揃える。前の部品が別の行なら何もしない。
+    const ImVec2 previousMin = ImGui::GetItemRectMin();
+    const ImVec2 previousMax = ImGui::GetItemRectMax();
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    if (cursor.y >= previousMin.y && cursor.y <= previousMax.y) {
+        ImGui::SetCursorScreenPos(ImVec2(cursor.x, previousMin.y + (previousMax.y - previousMin.y - size) * 0.5f));
+    }
+    DrawHelpMarker(help, size, false);
+}
+
+void HintText(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextV(format, args);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+    va_end(args);
+}
+
+}  // namespace sg::ui

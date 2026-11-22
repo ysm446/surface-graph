@@ -1,0 +1,283 @@
+#pragma once
+
+#include <imgui.h>
+
+#include "ui/Localization.h"
+
+#include <cstddef>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// UI の見た目とプロパティ行の共通部品。
+//
+// **UI を変更するときは docs/design/design-guide.md に従うこと。**
+// 個々のパネルが ImGui のウィジェットを直接呼ぶのではなく、
+// ここのヘルパーを通すことで、ラベルの体裁・幅・既定値・ツールチップが揃う。
+namespace sg::ui {
+
+// 設定の行（Property*）に渡った範囲・既定値・書式の記録。記録先を設定している間だけ足す。
+// ノードの設定の範囲と単位をコードから取り出す（ノードカタログ・評価のレポート）ために使う。
+// value は行が編集する値の場所、shown は丸める前の値（範囲外のまま読み込んだ値を見分ける）。
+struct PropertyRecord {
+    enum class Type { Float, Int, Bool, Combo, Color };
+    Type type = Type::Float;
+    std::string label, tooltip, format;
+    void* value = nullptr;
+    double shown = 0.0, minValue = 0.0, maxValue = 0.0, defaultValue = 0.0;
+    bool logarithmic = false;
+    std::vector<std::string> items;  // Combo の選択肢（表示名）
+};
+// nullptr で止める。
+void SetPropertyRecorder(std::vector<PropertyRecord>* recorder);
+
+// 参照欄の右に置く、アセットブラウザへ移動するアイコン。
+bool RevealSourceButton(bool enabled, const char* tooltip);
+
+// 未保存の印。size 角の枠に小さな丸を描く（テーマのアクセント色）。
+// size を省くとフレームの高さ。文字だけの行に並べるときは文字の高さを渡し、行を太らせない。
+// フォントに無い記号を避けて図形で描く。tooltip はホバー時の説明。
+void UnsavedMark(const char* tooltip, float size = 0.0f);
+
+// 部品の寸法。96 DPI 基準の値を置き、使うときに Scaled() で現在の DPI へ合わせる。
+// 値の意味と使い分けは design-guide.md にある。種類を勝手に増やさない。
+inline constexpr float kLabelColumnWidth = 108.0f;
+// 英語のときのラベル列。英語のラベルは同じ意味でも日本語より横に長いので、列だけ広げる。
+inline constexpr float kLabelColumnWidthEnglish = 144.0f;
+inline constexpr float kSliderMinWidth = 76.0f;
+inline constexpr float kSliderMaxWidth = 176.0f;
+inline constexpr float kComboMaxWidth = 190.0f;
+inline constexpr float kButtonWidth = 68.0f;
+inline constexpr float kWideButtonWidth = 148.0f;
+
+// 文字の基準サイズ（px、拡大率を掛ける前）の既定値と、設定で選べる範囲。
+// **これが寸法の基準**で、TextScaled() はこの値を 1.0 とみなす。
+// 小さすぎると日本語が潰れ、大きすぎるとパネルに収まらないので上下を切る。
+inline constexpr float kDefaultFontSize = 17.0f;
+inline constexpr float kMinFontSize = 11.0f;
+inline constexpr float kMaxFontSize = 28.0f;
+
+// グラフのノードに出すサムネイル（ノードの出力）の一辺。
+// このアプリではノードの中身を見分ける手掛かりがサムネイルしか無いので、模様が読める大きさにする。
+inline constexpr float kNodeThumbnail = 96.0f;
+
+// 列の境界を掴める幅（96 DPI 基準）。線そのものより広く取らないと狙って掴めない。
+inline constexpr float kSplitterGrabWidth = 8.0f;
+// 境界の線と、その左右の列との間に空ける幅。
+// **ここを詰めると、一覧の枠が境界に貼り付いて窮屈に見える。**
+inline constexpr float kSplitterMargin = 8.0f;
+// アセットを選ぶプルダウンの絞り込み欄。`ImGui::BeginCombo()` が真を返した直後に呼ぶ。
+// 開いた瞬間に欄へフォーカスが入り、打った文字を名前に含む項目だけを残す（大文字・小文字は区別しない）。
+// 開いているプルダウンは同時に 1 つなので、文字列は 1 つだけ持ち、開くたびに空に戻す。
+void ComboFilterInput();
+// 絞り込みに通るか（欄が空なら常に真）。項目を描く前に、名前やパスを渡して確かめる。
+bool ComboFilterPass(std::string_view text);
+// 絞り込み中か（欄に文字が入っているか）。「なし」のような固定の項目を隠すのに使う。
+bool ComboFilterActive();
+// 余白を取らない境界線。2 つの区画を 1 本の線で区切って繋げて見せるときに使う（グラフのパネル）。
+// 線は掴む帯の手前の端（左 / 上）に引くので、手前の区画は線にぴったり付き、帯の残りは奥の区画の
+// 余白になる。vertical が真なら左右の境界（size は左の幅）、偽なら上下の境界（size は上の高さ）。
+// 前後の ItemSpacing は呼び出し側で詰めること。離したときに true を返す。
+bool FlushSplitter(const char* id, bool vertical, float* size, float minSize, float maxSize, float length);
+inline constexpr float kTextInputWidth = 190.0f;
+
+// グレー基調のテーマを適用する。ImGui のコンテキストを作った直後に 1 回だけ呼ぶ。
+void ApplyTheme(float dpiScale);
+ImU32 TransformAxisColor(int axis);
+
+// 96 DPI 基準の寸法を現在の DPI へ合わせる。
+float Scaled(float value);
+
+// **文字が入る寸法**（ラベル列の幅、スライダーやボタンの幅）に使う。
+// DPI に加えて文字サイズの倍率も掛かるので、文字を大きくしても
+// ラベルが切れたりボタンから文字がはみ出したりしない。
+// 余白・線幅・サムネイルのような、文字と関係ない寸法には使わない（Scaled を使う）。
+float TextScaled(float value);
+
+// 文字サイズの倍率（kDefaultFontSize を 1.0 とする）。
+// 文字サイズに追従させたい寸法を自分で組み立てるときに使う。
+float FontScale();
+
+// --- プロパティ行 ---------------------------------------------------------
+//
+// すべての設定値は「ラベル：ウィジェット」の 2 列テーブルの 1 行として描く。
+// 左列にラベル（末尾に全角コロン）、右列にウィジェットを置く。
+
+bool BeginPropertyTable(const char* id, const char* widestLabel = nullptr);
+void EndPropertyTable();
+
+// セクション見出し。プロパティテーブルの外で呼ぶ。
+void SectionHeader(const char* label);
+// 説明付きの見出し。見出しの文字の右に「?」の印を置き、載せると help をツールチップで出す。
+// 節の使い方・繋ぎ方・出力の意味のような**変わらない説明**はここに載せ、行を取らない。
+// help が空なら印を出さない（条件付きの説明をそのまま渡せる）。
+void SectionHeader(const char* label, const char* help);
+
+// 行を開き、ラベル列を描いて値列へ移動する。既製の行で表せないウィジェットを
+// 自分で置きたいときに使う。ID を積むので、行の終わりで PropertyEnd() を呼ぶこと。
+void PropertyLabel(const char* label, const char* tooltip = nullptr);
+// ラベルを置かない行。ボタンだけを値列に並べたいときに使う。id は行ごとに固有にする。
+void PropertyLabelEmpty(const char* id);
+void PropertyEnd();
+
+// snapStep を渡すと、**ドラッグ中だけ**その刻みへ吸着する。
+// 「UV スケールを 2.00 にしたい」のように、きりのいい値を狙う行で使う。
+// Ctrl + クリックの直接入力は丸めない（狙って入れた値を動かさないため）。
+bool PropertyFloat(const char* label, float* value, float minValue, float maxValue,
+                   float defaultValue, const char* tooltip = nullptr,
+                   const char* format = "%.3f", ImGuiSliderFlags flags = 0,
+                   float snapStep = 0.0f);
+bool PropertyInt(const char* label, int* value, int minValue, int maxValue, int defaultValue,
+                 const char* tooltip = nullptr);
+bool PropertyBool(const char* label, bool* value, bool defaultValue,
+                  const char* tooltip = nullptr);
+// **表示色（sRGB）をそのまま持つ値**の行。背景色のように、
+// 画面へ出す値をそのまま格納しているものに使う。
+bool PropertyColor(const char* label, float* rgb, const float* defaultRgb,
+                   const char* tooltip = nullptr);
+// **リニアで持つ色**の行。描画に使う色（アルベド、ライト、空）はこちら。
+// 値はリニアのまま読み書きし、ピッカーには sRGB へ直して見せる。
+// そうしないと、スウォッチの見た目と描画結果が食い違う
+// （docs/design/design-guide.md の「色空間」を参照）。
+bool PropertyColorLinear(const char* label, float* linearRgb, const float* defaultLinearRgb,
+                         const char* tooltip = nullptr);
+// items は要素数 itemCount の配列。ImGui の "A\0B\0" 形式ではなく配列で受ける。
+bool PropertyCombo(const char* label, int* value, const char* const items[], int itemCount,
+                   int defaultValue, const char* tooltip = nullptr);
+// **編集を終えたとき（Enter か欄外のクリック）だけ true を返す。** 1 文字ごとに true を
+// 返すと、呼び出し側がそのたびに保存や再評価を走らせて入力が引っ掛かる。
+// 終えた時点で buffer には確定した文字列が入っている（ImGui が書き戻す）。
+bool PropertyTextInput(const char* label, char* buffer, size_t bufferSize,
+                       const char* tooltip = nullptr);
+// 複数行の文字列の行。高さは中の文字に合わせて伸びる（折り返した後の行数。スクロールさせない）。
+// lines は最低の行数。**編集を終えたとき（欄外のクリック）だけ true。**
+// 改行は Enter、確定は欄外のクリック（Enter で閉じると改行が打てないため）。
+bool PropertyTextMultiline(const char* label, std::string& text, int lines,
+                           const char* tooltip = nullptr);
+// 表示専用の値。
+void PropertyValue(const char* label, const char* format, ...);
+
+// 値列いっぱいに広げないボタン。幅は kButtonWidth / kWideButtonWidth のどちらか。
+bool Button(const char* label, float width = kButtonWidth);
+
+// --- サムネイル一覧 -------------------------------------------------------
+
+// サムネイル 1 枚ぶんの選択枠。**画像を描いた後に呼ぶこと。**
+//
+// 選択は「背景を敷く」では表せない。サムネイルが不透明だと下の色が完全に隠れる。
+// 画像の上に枠を重ねて描く。
+//
+// 呼ぶ前に ImGui::Image / Button を置き、その矩形（GetItemRectMin / Max）を渡す。
+void ThumbnailFrame(const ImVec2& min, const ImVec2& max, bool selected, bool hovered);
+
+struct Thumbnail {
+    bool clicked = false;
+    bool hovered = false;
+    // ダブルクリック。**1 回目のクリックは clicked にも立つ**ので、
+    // 「選ぶ」と「開く」を両方やりたい側はそのまま両方見ればよい。
+    bool doubleClicked = false;
+};
+
+// サムネイル 1 枚。**ドラッグ元にできる形で置く。**
+//
+// `ImGui::Image()` は ID を持たないアイテムなので、そのままでは
+// `BeginDragDropSource()` がドラッグを開始できず、黙って false を返す。
+// ここでは `InvisibleButton` で ID を確保してから画像を描く。
+//
+// 戻った直後に `BeginDragDropSource()` を置いてよい
+// （枠の描画は最後のアイテムを変えない）。
+//
+// captionLines に GridCaption の行数（2）を渡すと、当たり判定を名前の行まで広げる。
+// 絵と枠は正方形のままで、カーソルもその直下に戻すので、続けて GridCaption を置けばよい。
+// 名前の上に入力欄（GridCaptionInput）を重ねるときは 0 にする。先に置いた当たり判定が
+// 入力欄のホバーを奪ってしまう。
+Thumbnail ThumbnailButton(const char* id, ImTextureID texture, float size, bool selected, int captionLines = 0);
+
+// 一覧の行に置く小さなサムネイル。**選択枠は付けない。**
+// 行そのものが選択を示すので、画像側にも枠を出すと選択が二重に見える。
+// texture の ptr が 0 なら中身の代わりに枠だけを描く。
+void ThumbnailImage(ImTextureID texture, float size);
+
+// リンク切れのサムネイル。**画像が無いので、絵の代わりに警告の三角を描く。**
+//
+// 読み込み元のファイルが見つからないテクスチャは一覧から消さず、
+// この見た目で残す（繋ぎ直すための入口を保つ）。タイルは枠の色で塗り、
+// 警告色の枠と三角（字形の無い記号なので図形で描く）を載せる。
+// ThumbnailButton / ThumbnailImage と同じ矩形を渡す。
+void MissingThumbnail(const ImVec2& min, const ImVec2& max);
+
+// リンク切れの目印。**絵のある**サムネイルの右下に小さく重ねる。
+// 参照先の一部が欠けているマテリアルのように、絵は出せるが不完全なものに使う。
+void MissingBadge(const ImVec2& min, const ImVec2& max);
+
+// 一覧の行に置く単色のサムネイル。テクスチャを持たないもの
+// （マテリアルを割り当てていないレイヤーなど）の代わりに使う。
+void ColorSwatch(const ImVec4& color, float size);
+
+// アセット種類のアイコン。目のアイコンと同じく、字形が無いので
+// 図形で描く（design-guide.md の「記号を使うとき」を参照）。
+enum class AssetIcon { Atmosphere, Terrain, Cloud };
+// 既存サムネイル枠へ線画だけを重ねる。入力・レイアウトは変更しない。
+void DrawAssetIcon(AssetIcon icon, const ImVec2& min, const ImVec2& max);
+
+// --- 表示・非表示の目印 ---------------------------------------------------
+
+// 目のアイコンでオン / オフを切り替える。値が変わったら true。
+//
+// **字形ではなく図形で描く。** フォントは日本語が出せるシステムフォントを
+// 読むだけで、目のような記号の字形を持っていない（design-guide.md の
+// 「記号を使うとき」を参照）。
+bool EyeToggle(const char* id, bool* value, float size);
+
+// リファレンス表示（ワイヤーフレーム）のオン / オフ。四角を三角形に割った網の図形で描く
+// （字形ではなく図形。EyeToggle と同じ理由）。色の付け方も EyeToggle と同じ。値が変わったら true。
+bool WireframeToggle(const char* id, bool* value, float size);
+
+// 保存のボタン。フロッピーディスクの図形で描く（字形ではなく図形。EyeToggle と同じ理由）。
+// 押したら true。ホバーで色が持ち上がり、tooltip があれば出す。
+bool SaveIconButton(const char* id, float size, const char* tooltip);
+
+// 通知の意味色。ステータスバーで警告とエラーを区別するためだけに使う。
+// グレー基調を崩さないよう彩度は低く抑えてある。配色の一部なので UiStyle.cpp に置く。
+ImU32 WarnColor();
+ImU32 ErrorColor();
+
+// 補助テキスト。**今の状態**（繋がっていない、未保存、結果の数など）を 1 行で添えるときに使う。
+// 変わらない説明は SectionHeader(label, help) か HelpMarker() に載せ、行を取らない。
+void HintText(const char* format, ...);
+
+// 「?」の印。載せると help をツールチップで出す。見出しの無い行に説明を添えるときに、
+// 前の部品の右（SameLine）に置く。help が空なら何も描かない。
+void HelpMarker(const char* help);
+
+// 左右の区画の境界。呼び出し側で左右の余白とSameLineを配置する。
+bool VerticalSplitter(const char* id, float* width, float minWidth, float maxWidth, float height);
+
+// 上下に積んだ 2 つの区画の境界。ドラッグで上の区画の高さを変える。
+//
+// height は**実ピクセル**（`Scaled()` を通した後の値）で受け渡しする。
+// width には区画の幅を渡す。`GetContentRegionAvail()` に頼ると、
+// 直前の子ウィンドウの都合で幅が変わってしまう。
+//
+// 戻り値は「掴んでいた手を離したフレーム」で true。
+// 設定の保存のように、ドラッグ中に毎フレームやりたくない処理をここへ吊るす。
+bool HorizontalSplitter(const char* id, float* height, float minHeight, float maxHeight,
+                        float width);
+
+// 1 行に収まらない名前の中央を「…」で省き、先頭と末尾を残す。収まるならそのまま返す。
+std::string EllipsizeMiddle(const char* text, float width);
+
+// 一覧のサムネイルの下に置く名前。**幅はサムネイルに合わせて渡すこと。**
+// **常に 2 行**で描く（行数が変わると升目の高さが揃わない）。
+// 収まらないぶんは中央を省略し、先頭と末尾の両方を残す。
+// 全体はホバーのツールチップで読める。
+void GridCaption(const char* text, float width);
+
+// 名前をその場で編集する 1 行の入力欄。Enter か外をクリックで確定、Esc で取り消し。
+// *focus が true の間は入力欄へフォーカスを移し続け、掴んだら false に戻す（開始時に全選択される）。
+enum class CaptionEdit { Editing, Commit, Cancel };
+CaptionEdit InlineNameInput(const char* id, char* buffer, size_t bufferSize, float width, bool* focus);
+// GridCaption の位置に置く InlineNameInput。高さは GridCaption と同じ 2 行ぶんを取る。
+CaptionEdit GridCaptionInput(const char* id, char* buffer, size_t bufferSize, float width, bool* focus);
+
+}  // namespace sg::ui

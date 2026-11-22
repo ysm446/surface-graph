@@ -1,0 +1,252 @@
+#include "ui/ImGuiLayer.h"
+
+#include "core/Log.h"
+#include "core/Window.h"
+#include "rhi/Device.h"
+#include "ui/UiStyle.h"
+
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <imgui_impl_dx12.h>
+#include <imgui_impl_win32.h>
+
+#include <algorithm>
+#include <cmath>
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam,
+                                                             LPARAM lparam);
+
+namespace sg {
+namespace {
+
+// フォントの基準サイズ。実際の大きさは ImGui 側で UI 拡大率が掛かる。
+// アトラスへ読むときのサイズ。1.92 は必要なサイズで動的にラスタライズするので、
+// これは出発点でしかない（実際の大きさは style.FontSizeBase で決める）。
+constexpr float kFontAtlasSize = ui::kDefaultFontSize;
+
+// ImGui バックエンドからのディスクリプタ確保要求を、こちらのアロケータへ橋渡しする。
+void SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpu,
+                        D3D12_GPU_DESCRIPTOR_HANDLE* outGpu) {
+    auto* device = static_cast<rhi::Device*>(info->UserData);
+    const rhi::DescriptorHandle handle = device->SrvHeap().Allocate();
+    *outCpu = handle.cpu;
+    *outGpu = handle.gpu;
+}
+
+void SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu,
+                       D3D12_GPU_DESCRIPTOR_HANDLE gpu) {
+    (void)gpu;
+    auto* device = static_cast<rhi::Device*>(info->UserData);
+    rhi::DescriptorHeap& heap = device->SrvHeap();
+    const D3D12_CPU_DESCRIPTOR_HANDLE start = heap.At(0).cpu;
+    const uint32_t index =
+        static_cast<uint32_t>((cpu.ptr - start.ptr) / heap.DescriptorSize());
+    // 記録中のフレームがまだ参照しているので、ヒープへ直接返さず遅延解放に回す。
+    // Shutdown からも呼ばれるが、ImGuiLayer::Shutdown は Device::Shutdown より先に
+    // 走り、Device 側が最後に遅延キューを流すので、ここで積んでも取りこぼさない。
+    device->DeferFree(heap, heap.At(index));
+}
+
+}  // namespace
+
+void ImGuiLayer::EnableDpiAwareness() {
+    ImGui_ImplWin32_EnableDpiAwareness();
+}
+
+ImGuiLayer::~ImGuiLayer() {
+    Shutdown();
+}
+
+bool ImGuiLayer::Initialize(Window& window, rhi::Device& device) {
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.IniFilename = kImGuiIniFileName;
+    // ウィンドウの移動はタイトルバーからだけにする。
+    // これをしないと、ビューポートの余白をドラッグしただけでパネルが動いてしまう。
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
+
+    // クライアント領域を実ピクセルで固定しているので、UI の拡大率は既定では
+    // モニタの DPI に追従させない（固定したはずの作業面積が変わってしまうため）。
+    // DPI 認識自体は有効なままなので、OS によるビットマップ拡大は起きない。
+    // 追従させるかは設定で選べる（Application が SetUiScale を呼ぶ）。
+    m_monitorScale = ImGui_ImplWin32_GetDpiScaleForHwnd(window.Handle());
+    SG_LOG_INFO(ui::Tr("モニタの表示スケール: %.0f%%（UI の拡大率は %.0f%%）", "Monitor display scale: %.0f%% (UI scale %.0f%%)"), m_monitorScale * 100.0f,
+                m_uiScale * 100.0f);
+
+    // 配色と余白はここで一括して決める。個々のパネルで色を積まない。
+    ui::ApplyTheme(m_uiScale);
+
+    if (!ImGui_ImplWin32_Init(window.Handle())) {
+        SG_LOG_ERROR(ui::Tr("ImGui_ImplWin32_Init に失敗しました", "ImGui_ImplWin32_Init failed"));
+        // 途中で失敗したら、ここまでに作ったものを戻す（Shutdown は未初期化だと何もしない）。
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    ImGui_ImplDX12_InitInfo info = {};
+    info.Device = device.GetDevice();
+    info.CommandQueue = device.GetCommandQueue();
+    info.NumFramesInFlight = static_cast<int>(rhi::kFrameCount);
+    info.RTVFormat = rhi::kBackBufferFormat;
+    info.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    info.UserData = &device;
+    info.SrvDescriptorHeap = device.SrvHeap().Heap();
+    info.SrvDescriptorAllocFn = &SrvDescriptorAlloc;
+    info.SrvDescriptorFreeFn = &SrvDescriptorFree;
+
+    if (!ImGui_ImplDX12_Init(&info)) {
+        SG_LOG_ERROR(ui::Tr("ImGui_ImplDX12_Init に失敗しました", "ImGui_ImplDX12_Init failed"));
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
+
+    LoadFonts();
+    // 読み込んだ大きさではなく、こちらが持っている基準サイズで描く。
+    ApplyScaleToStyle();
+
+    m_initialized = true;
+    return true;
+}
+
+void ImGuiLayer::SetUiScale(float scale, bool announce) {
+    const float clamped = std::clamp(scale, 0.5f, 4.0f);
+    if (std::abs(clamped - m_uiScale) < 0.001f) {
+        return;
+    }
+    m_uiScale = clamped;
+
+    // 余白・角丸・部品幅はテーマ側でまとめて掛け直す。
+    ui::ApplyTheme(m_uiScale);
+    ApplyScaleToStyle();
+
+    if (announce) {
+        SG_LOG_INFO(ui::Tr("UI の拡大率を %.0f%% にしました", "UI scale set to %.0f%%"), m_uiScale * 100.0f);
+    }
+}
+
+void ImGuiLayer::ScaleLayout(float factor) {
+    ImGuiContext& g = *GImGui;
+    const auto scaled = [factor](ImVec2 value) { return ImVec2(value.x * factor, value.y * factor); };
+    m_savedLayout.clear();
+
+    // ドックの分割。位置は毎フレーム親から決まるので、大きさだけ縮める。
+    for (int i = 0; i < g.DockContext.Nodes.Data.Size; ++i) {
+        auto* node = static_cast<ImGuiDockNode*>(g.DockContext.Nodes.Data[i].val_p);
+        if (node == nullptr) {
+            continue;
+        }
+        m_savedLayout.push_back({node->ID, true, ImVec2(), node->Size, node->SizeRef});
+        node->Size = scaled(node->Size);
+        node->SizeRef = scaled(node->SizeRef);
+    }
+
+    // 浮いているウィンドウ。ドックに入っているものはノードが、子やポップアップは親が大きさを決める。
+    const ImVec2 origin = ImGui::GetMainViewport()->Pos;
+    for (ImGuiWindow* window : g.Windows) {
+        if (window->DockIsActive ||
+            (window->Flags & (ImGuiWindowFlags_ChildWindow | ImGuiWindowFlags_Popup |
+                              ImGuiWindowFlags_Tooltip)) != 0) {
+            continue;
+        }
+        m_savedLayout.push_back({window->ID, false, window->Pos, window->Size, window->SizeFull});
+        window->Pos = ImVec2(origin.x + (window->Pos.x - origin.x) * factor,
+                             origin.y + (window->Pos.y - origin.y) * factor);
+        window->Size = scaled(window->Size);
+        window->SizeFull = scaled(window->SizeFull);
+    }
+}
+
+void ImGuiLayer::RestoreLayout() {
+    for (const SavedLayoutItem& item : m_savedLayout) {
+        if (item.dockNode) {
+            if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(item.id)) {
+                node->Size = item.size;
+                node->SizeRef = item.sizeRef;
+            }
+        } else if (ImGuiWindow* window = ImGui::FindWindowByID(item.id)) {
+            window->Pos = item.pos;
+            window->Size = item.size;
+            window->SizeFull = item.sizeRef;
+        }
+    }
+    m_savedLayout.clear();
+}
+
+void ImGuiLayer::SetFontSize(float sizeInPixels) {
+    const float clamped = std::clamp(sizeInPixels, ui::kMinFontSize, ui::kMaxFontSize);
+    if (std::abs(clamped - m_fontSize) < 0.001f) {
+        return;
+    }
+    m_fontSize = clamped;
+
+    // テーマは触らない。**余白や部品幅は拡大率だけで決める**ので、
+    // 文字サイズを変えても行の詰まり方は変わらない（高さだけが文字に追従する）。
+    ApplyScaleToStyle();
+
+    SG_LOG_INFO(ui::Tr("フォントサイズを %.0f px にしました", "Font size set to %.0f px"), m_fontSize);
+}
+
+// フォントは 1.92 の動的ラスタライズに任せる。アトラスは作り直さない。
+// 実際に描かれる大きさは FontSizeBase × FontScaleDpi。
+void ImGuiLayer::ApplyScaleToStyle() {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.FontSizeBase = m_fontSize;
+    style.FontScaleDpi = m_uiScale;
+}
+
+void ImGuiLayer::LoadFonts() {
+    // 日本語を表示できるよう、システムフォントを優先して読み込む。
+    static const char* const kCandidates[] = {
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+    };
+
+    ImGuiIO& io = ImGui::GetIO();
+    for (const char* path : kCandidates) {
+        // 基準サイズで読む。拡大率は FontScaleDpi が掛ける。
+        if (io.Fonts->AddFontFromFileTTF(path, kFontAtlasSize) != nullptr) {
+            SG_LOG_INFO(ui::Tr("フォントを読み込みました: %s", "Loaded font: %s"), path);
+            return;
+        }
+    }
+    SG_LOG_WARN(ui::Tr("日本語フォントが見つかりませんでした。既定フォントを使用します", "Japanese font not found. Using the default font"));
+    io.Fonts->AddFontDefault();
+}
+
+void ImGuiLayer::Shutdown() {
+    if (!m_initialized) {
+        return;
+    }
+    ImGui_ImplDX12_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    m_initialized = false;
+    m_uiScale = 1.0f;
+    m_fontSize = ui::kDefaultFontSize;
+}
+
+void ImGuiLayer::BeginFrame() {
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+}
+
+void ImGuiLayer::EndFrame(ID3D12GraphicsCommandList* commandList) {
+    ImGui::Render();
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), commandList);
+}
+
+bool ImGuiLayer::HandleMessage(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (!m_initialized) {
+        return false;
+    }
+    return ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam) != 0;
+}
+
+}  // namespace sg

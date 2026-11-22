@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.dds binary
+*.exr binary
+*.hdr binary
+*.ttf binary
+*.ttc binary
+
+# バッチファイルは CRLF でないと cmd が行を読み違える。
+*.bat text eol=crlf

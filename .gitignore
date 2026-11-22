@@ -1,0 +1,21 @@
+build/
+out/
+.vs/
+.vscode/
+vcpkg_installed/
+*.user
+*.aps
+*.pdb
+*.ilk
+
+# ImGui がリポジトリのルートへ吐くレイアウト保存。環境ごとに違うのでコミットしない。
+*_imgui.ini
+
+# 手元のデータ置き場（動作確認用の素材、撮ったスクリーンショット、CLI の出力）。
+# コミットするアセットは assets/ へ置く。
+data/
+
+# テスト（単体テストのソース、テスト用グラフ、基準画像）はコミットしない。
+# 手元に置いてあれば CMake が自動で組み込む（ctest で走る）。
+tests/
+graphs/tests/
