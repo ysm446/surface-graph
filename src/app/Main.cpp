@@ -45,7 +45,8 @@ sg::StartupOptions ParseCommandLine() {
         } else if (argument == L"--ui-scale" && i + 1 < argc) {
             options.uiScale = std::clamp(static_cast<float>(::_wtof(argv[++i])), 0.5f, 3.0f);
         } else if (argument == L"--preview-shape" && i + 1 < argc) {
-            options.previewShape = (std::wstring(argv[++i]) == L"plane") ? 1 : 0;
+            const std::wstring shape = argv[++i];
+            options.previewShape = (shape == L"plane") ? 1 : (shape == L"cube") ? 2 : 0;
         } else if (argument == L"--show-light-gizmo") {
             options.showLightGizmo = true;
         } else if (argument == L"--view-tiling") {

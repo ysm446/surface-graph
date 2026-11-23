@@ -16,7 +16,7 @@ inline constexpr float kPreviewFovY = 0.6f;
 
 // 3D ビューの設定。角度はラジアン。
 struct PreviewSettings {
-    int shape = 0;  // 0 球 / 1 平面
+    int shape = 0;  // 0 球 / 1 平面 / 2 角丸の立方体
     float yaw = 0.6f;
     float pitch = 0.35f;
     float distance = 3.2f;

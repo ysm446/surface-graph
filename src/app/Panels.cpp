@@ -738,9 +738,9 @@ void Application::DrawView3dPanel() {
     ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + margin});
     const float toolbarBottom = ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight();
     ImGui::AlignTextToFramePadding();
-    static const ui::LocalizedText kShapes[] = {{"球", "Sphere"}, {"平面", "Plane"}};
+    static const ui::LocalizedText kShapes[] = {{"球", "Sphere"}, {"平面", "Plane"}, {"角丸の立方体", "Rounded Cube"}};
     const auto shapes = ui::Tr(kShapes);
-    ImGui::SetNextItemWidth(ui::TextScaled(72.0f));
+    ImGui::SetNextItemWidth(ui::TextScaled(130.0f));
     // 形はグラフに保存する（Graph::previewShape）。アンドゥの起点にも写して、1 手として積まない。
     settings.shape = m_graph.previewShape;
     if (ImGui::Combo("##shape", &settings.shape, shapes.data(), static_cast<int>(shapes.size()))) {

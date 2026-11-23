@@ -104,7 +104,7 @@ void MaterialPreview::Render(ID3D12GraphicsCommandList* commandList, const graph
     constants.output = m_target.UavIndex();
     constants.width = width;
     constants.height = height;
-    constants.shape = static_cast<uint32_t>(std::clamp(settings.shape, 0, 1));
+    constants.shape = static_cast<uint32_t>(std::clamp(settings.shape, 0, 2));
     constants.flags = settings.showSky ? 1u : 0u;
 
     // Material Output の入力に繋がったテクスチャを、そのまま読む。

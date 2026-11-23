@@ -39,7 +39,7 @@ struct StartupOptions {
     bool showSettings = false;               // --show-settings（スクリーンショットの確認用。設定のウィンドウを開く）
     bool arrange = false;                    // --arrange（スクリーンショットの確認用。開いたグラフを整列する）
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
-    int previewShape = -1;                   // --preview-shape sphere|plane（スクリーンショットの確認用）
+    int previewShape = -1;                   // --preview-shape sphere|plane|cube（スクリーンショットの確認用）
 };
 
 // エディタ本体。UI はグラフモデル（m_graph）を編集するだけで、GPU は評価エンジン越しにしか触らない。

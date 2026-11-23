@@ -1,4 +1,4 @@
-// 3D ビュー。Material Output に繋がったマップを、球か平面に貼って描く。
+// 3D ビュー。Material Output に繋がったマップを、球・平面・角丸の立方体に貼って描く。
 //
 // メッシュを使わず、コンピュートシェーダーでピクセルごとに球 / 平面と交差させる。
 // シェーディングは Cook-Torrance（GGX / Smith / Schlick）のメタリック・ラフネス。
@@ -18,7 +18,7 @@ cbuffer PreviewConstants : register(b0) {
     uint gColorMask;      // ビット i が立っていれば、そのマップは Color（立っていなければ Gray）
     uint gWidth;
     uint gHeight;
-    uint gShape;          // 0 球 / 1 平面
+    uint gShape;          // 0 球 / 1 平面 / 2 角丸の立方体
     uint gNormalFormat;   // 0 DirectX / 1 OpenGL
     uint gFlags;          // ビット 0: 背景に空を出す
     uint gReserved0;
@@ -189,6 +189,74 @@ Hit IntersectPlane(float3 origin, float3 direction) {
     return hit;
 }
 
+// 角丸の立方体（Substance Designer の Rounded Cube にならう）。外形の半分の長さ kCubeHalf、角の丸み kCubeRadius。
+// 距離関数をなぞって交点を探す（外接する箱で範囲を絞ってから）。
+// UV は面ごとに 0〜1 を 1 枚（× タイル数）貼る。どの面も外から見て u が右、v が下へ増える向き
+// （上面は平面と同じ、側面は上が v = 0）。丸みの部分は法線の一番大きい軸の面に属する（そこで継ぎ目が出る）。
+static const float kCubeHalf = 0.6;
+static const float kCubeRadius = 0.1;
+
+float RoundedCubeDistance(float3 p) {
+    const float3 q = abs(p) - (kCubeHalf - kCubeRadius);
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - kCubeRadius;
+}
+
+Hit IntersectRoundedCube(float3 origin, float3 direction) {
+    Hit hit;
+    hit.valid = false;
+    hit.position = 0.0;
+    hit.normal = float3(0.0, 1.0, 0.0);
+    hit.tangent = float3(1.0, 0.0, 0.0);
+    hit.bitangent = float3(0.0, 0.0, 1.0);
+    hit.uv = 0.0;
+    // 外接する箱との交差（スラブ法）で、なぞる範囲を決める。
+    const float3 inverse = 1.0 / direction;
+    const float3 t0 = (-kCubeHalf - origin) * inverse;
+    const float3 t1 = (kCubeHalf - origin) * inverse;
+    const float3 near3 = min(t0, t1);
+    const float3 far3 = max(t0, t1);
+    const float tNear = max(max(near3.x, near3.y), max(near3.z, 0.0));
+    const float tFar = min(far3.x, min(far3.y, far3.z));
+    if (tNear > tFar) return hit;
+    float t = tNear;
+    bool found = false;
+    for (int i = 0; i < 64 && t <= tFar; ++i) {
+        const float d = RoundedCubeDistance(origin + direction * t);
+        if (d < 1e-4) {
+            found = true;
+            break;
+        }
+        t += d;
+    }
+    if (!found) return hit;
+    hit.valid = true;
+    hit.position = origin + direction * t;
+    // 法線は距離関数の勾配。
+    const float e = 1e-4;
+    hit.normal = normalize(float3(
+        RoundedCubeDistance(hit.position + float3(e, 0, 0)) - RoundedCubeDistance(hit.position - float3(e, 0, 0)),
+        RoundedCubeDistance(hit.position + float3(0, e, 0)) - RoundedCubeDistance(hit.position - float3(0, e, 0)),
+        RoundedCubeDistance(hit.position + float3(0, 0, e)) - RoundedCubeDistance(hit.position - float3(0, 0, e))));
+    // 面ごとの u / v の向き。外から見て u が右、v が下（tangent × bitangent = -normal）。
+    const float3 a = abs(hit.normal);
+    float3 tangent, bitangent;
+    if (a.y >= a.x && a.y >= a.z) {
+        tangent = float3(1.0, 0.0, 0.0);
+        bitangent = float3(0.0, 0.0, hit.normal.y > 0.0 ? 1.0 : -1.0);
+    } else if (a.z >= a.x) {
+        tangent = float3(hit.normal.z > 0.0 ? 1.0 : -1.0, 0.0, 0.0);
+        bitangent = float3(0.0, -1.0, 0.0);
+    } else {
+        tangent = float3(0.0, 0.0, hit.normal.x > 0.0 ? -1.0 : 1.0);
+        bitangent = float3(0.0, -1.0, 0.0);
+    }
+    hit.uv = (float2(dot(hit.position, tangent), dot(hit.position, bitangent)) / (2.0 * kCubeHalf) + 0.5) * gUvScale;
+    // 丸みの部分でも法線と直交するように直す。
+    hit.tangent = normalize(tangent - hit.normal * dot(hit.normal, tangent));
+    hit.bitangent = normalize(bitangent - hit.normal * dot(hit.normal, bitangent));
+    return hit;
+}
+
 // パララックスオクルージョン。視線を接空間で進めて、高さとぶつかる UV を探す。
 // viewTangent は面から目へ向かうベクトル（接空間）。奥へ進むほど UV は -viewTangent.xy の向きへ動く。
 // Displacement は 0.5 を基準面とする（Megascans と同じ）。
@@ -236,6 +304,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
     Hit hit;
     if (gShape == 1u) hit = IntersectPlane(gCameraPosition, direction);
+    else if (gShape == 2u) hit = IntersectRoundedCube(gCameraPosition, direction);
     else hit = IntersectSphere(gCameraPosition, direction);
 
     float3 color = background;
