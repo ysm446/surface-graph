@@ -97,6 +97,7 @@ bool Application::Initialize(const StartupOptions& options) {
     if (options.showSettings) m_showSettings = true;
     if (options.uvChecker) m_previewSettings.uvChecker = true;
     if (options.viewGrid) m_viewGrid = true;
+    if (options.viewTiling) m_viewTiling = true;
     if (options.arrange) m_arrangeCountdown = 4;  // ノードを 1 度描いて、大きさが決まってから
 
     LoadSettings();

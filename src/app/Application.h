@@ -33,6 +33,7 @@ struct StartupOptions {
     std::string language;                    // --language ja|en
     bool gpuValidation = false;
     float uiScale = 0.0f;                    // --ui-scale <倍率>（スクリーンショットの確認用。0 で設定に従う）
+    bool viewTiling = false;                 // --view-tiling（スクリーンショットの確認用。2D ビューでタイリングする）
     bool viewGrid = false;                   // --view-grid（スクリーンショットの確認用。2D ビューに UV グリッドを出す）
     bool uvChecker = false;                  // --uv-checker（スクリーンショットの確認用。3D ビューに UV チェッカーを貼る）
     bool showSettings = false;               // --show-settings（スクリーンショットの確認用。設定のウィンドウを開く）
@@ -193,7 +194,7 @@ private:
     // 出力ピンのクリックの判定用。押したピンと、押した位置。
     uint64_t m_pressedPin = 0;
     ImVec2 m_pressedPinPos = {0.0f, 0.0f};
-    bool m_viewTile = false;
+    bool m_viewTiling = false;  // 画像を UV の正の向き（右と下）へ繰り返して描く
     bool m_viewGrid = false;  // UV のグリッドと座標の数字を重ねる
     int m_viewChannel = 0;  // 0 RGB / 1 R / 2 G / 3 B / 4 A
     float m_viewZoom = 1.0f;

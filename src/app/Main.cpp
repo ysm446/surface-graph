@@ -48,6 +48,8 @@ sg::StartupOptions ParseCommandLine() {
             options.previewShape = (std::wstring(argv[++i]) == L"plane") ? 1 : 0;
         } else if (argument == L"--show-light-gizmo") {
             options.showLightGizmo = true;
+        } else if (argument == L"--view-tiling") {
+            options.viewTiling = true;
         } else if (argument == L"--view-grid") {
             options.viewGrid = true;
         } else if (argument == L"--uv-checker") {

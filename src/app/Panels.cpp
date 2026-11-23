@@ -346,16 +346,14 @@ void Application::DrawGraphSettingsPanel() {
 
 namespace {
 
-// 2D ビューの UV グリッド。origin / tileSize は画像 1 枚ぶんの画面上の矩形（3×3 なら左上の 1 枚目）。
-// 3×3 のときは中央の 1 枚が UV の 0〜1 になる。
+// 2D ビューの UV グリッド。zero は UV の (0, 0)（画像 1 枚目の左上）の画面上の位置、tileSize は 1 枚の大きさ。
 // 線は UV の整数（0, 1, 2…、タイルの境目）にだけ引き、画像の外側の領域いっぱいまで伸ばす。内側は分けない。
 // 色は付けず、原点を通る線（u = 0 と v = 0）だけを濃くする（ユーザー指定 2026-11-24）。
 // 座標の数字は、領域の上端（u）と左端（v）に薄く載せる。原点は左上で、v は下へ増える（シェーダの UV と同じ）。
 // 引いて線が詰まったら（画面で 40 px 未満）、2, 4, 8… おきに間引く。
-void DrawUvGrid(ImDrawList* drawList, const ImVec2& origin, const ImVec2& tileSize, int tiles, const ImVec2& areaMin,
+void DrawUvGrid(ImDrawList* drawList, const ImVec2& zero, const ImVec2& tileSize, const ImVec2& areaMin,
                 const ImVec2& areaMax) {
     if (tileSize.x < 1.0f || tileSize.y < 1.0f) return;
-    const ImVec2 zero = (tiles == 3) ? ImVec2(origin.x + tileSize.x, origin.y + tileSize.y) : origin;
     const auto stepFor = [](float pixelsPerUnit) {
         int step = 1;
         while (pixelsPerUnit * static_cast<float>(step) < 40.0f && step < (1 << 20)) step *= 2;
@@ -426,18 +424,7 @@ void Application::DrawView2dPanel() {
     const float toolbarBottom = ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight();
     ImGui::AlignTextToFramePadding();
     // ノード名と解像度は操作列に置かず、画像の領域の左下に薄く重ねる（下の「情報の重ね書き」）。
-    ImGui::Checkbox(ui::Tr("3×3 タイル", "3x3 Tile"), &m_viewTile);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("%s", ui::Tr("繋ぎ目を確かめるために 3×3 に並べる。", "Repeats the image 3x3 to check the seams."));
-    }
-    ImGui::SameLine();
-    ImGui::Checkbox(ui::Tr("グリッド", "Grid"), &m_viewGrid);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        ImGui::SetTooltip("%s", ui::Tr("UV のグリッドと座標を重ねる。原点は左上（u は右、v は下へ増える。シェーダの UV と同じ向き）。",
-                                       "Overlays the UV grid and coordinates. The origin is top-left "
-                                       "(u grows to the right, v downward, as in the shaders)."));
-    }
-    ImGui::SameLine();
+    // グリッドとタイリングは「表示設定」のポップアップにまとめる（3D ビューと同じ作り）。
     static const char* const kChannels[] = {"RGB", "R", "G", "B", "A"};
     ImGui::SetNextItemWidth(ui::TextScaled(72.0f));
     ImGui::Combo("##channel", &m_viewChannel, kChannels, 5);
@@ -451,6 +438,26 @@ void Application::DrawView2dPanel() {
             ImGui::EndCombo();
         }
     }
+    ImGui::SameLine();
+    if (ImGui::Button(ui::Tr("表示設定###view2dSettingsButton", "View Settings###view2dSettingsButton"))) {
+        ImGui::OpenPopup("##view2dSettings");
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.5f, pad * 1.5f));
+    if (ImGui::BeginPopup("##view2dSettings")) {
+        if (ui::BeginPropertyTable("View2dRows")) {
+            ui::PropertyBool(ui::Tr("グリッド", "Grid"), &m_viewGrid, false,
+                             ui::Tr("UV の整数（0, 1, 2…）に線を引き、座標を薄く載せる。原点は左上"
+                                    "（u は右、v は下へ増える。シェーダの UV と同じ向き）。",
+                                    "Draws lines at whole UV values (0, 1, 2...) with their coordinates. The origin is "
+                                    "top-left (u grows to the right, v downward, as in the shaders)."));
+            ui::PropertyBool(ui::Tr("タイリング", "Tiling"), &m_viewTiling, false,
+                             ui::Tr("画像を UV の正の向き（右と下）へ、見えている範囲いっぱいに繰り返す。繋ぎ目の確認用。",
+                                    "Repeats the image toward positive UV (right and down) across the view, to check the seams."));
+            ui::EndPropertyTable();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
     ImGui::SameLine();
     if (ImGui::Button(ui::Tr("全体", "Fit"))) {
         m_viewZoom = 1.0f;
@@ -506,18 +513,30 @@ void Application::DrawView2dPanel() {
             }
             // 正方形でない出力は、長い辺を領域に合わせて縦横比を保つ。
             const float aspect = static_cast<float>(output.texture.texture.width) / static_cast<float>(std::max(1u, output.texture.texture.height));
-            const float scale = baseSize * m_viewZoom * (m_viewTile ? (1.0f / 3.0f) : 1.0f);
+            const float scale = baseSize * m_viewZoom;
             const ImVec2 size = {scale * std::min(1.0f, aspect), scale * std::min(1.0f, 1.0f / aspect)};
-            const int tiles = m_viewTile ? 3 : 1;
-            const ImVec2 origin = {center.x + m_viewPan.x - size.x * tiles * 0.5f, center.y + m_viewPan.y - size.y * tiles * 0.5f};
-            for (int y = 0; y < tiles; ++y) {
-                for (int x = 0; x < tiles; ++x) {
-                    const ImVec2 min = {origin.x + size.x * x, origin.y + size.y * y};
-                    drawList->AddImage(texture, min, {min.x + size.x, min.y + size.y});
+            // UV の (0, 0)。1 枚目（0〜1）は、全体表示で領域の中央に来る。
+            const ImVec2 zero = {center.x + m_viewPan.x - size.x * 0.5f, center.y + m_viewPan.y - size.y * 0.5f};
+            if (m_viewTiling && size.x >= 2.0f && size.y >= 2.0f) {
+                // タイリング: 1 枚目から右と下へ、見えている範囲いっぱいに繰り返す（左と上へは描かない）。
+                // 引きすぎて枚数が膨らまないよう、各向き 256 枚で打ち切る。
+                const int firstX = std::max(0, static_cast<int>(std::floor((areaMin.x - zero.x) / size.x)));
+                const int firstY = std::max(0, static_cast<int>(std::floor((areaMin.y - zero.y) / size.y)));
+                const int lastX = std::min(firstX + 256, static_cast<int>(std::ceil((areaMax.x - zero.x) / size.x)));
+                const int lastY = std::min(firstY + 256, static_cast<int>(std::ceil((areaMax.y - zero.y) / size.y)));
+                for (int y = firstY; y < lastY; ++y) {
+                    for (int x = firstX; x < lastX; ++x) {
+                        const ImVec2 min = {zero.x + size.x * x, zero.y + size.y * y};
+                        drawList->AddImage(texture, min, {min.x + size.x, min.y + size.y});
+                    }
                 }
+            } else {
+                drawList->AddImage(texture, zero, {zero.x + size.x, zero.y + size.y});
             }
-            drawList->AddRect(origin, {origin.x + size.x * tiles, origin.y + size.y * tiles}, ImGui::GetColorU32(ImGuiCol_Border));
-            if (m_viewGrid) DrawUvGrid(drawList, origin, size, tiles, areaMin, areaMax);
+            // 枠はタイリングしないときだけ引く。タイリング中に引くと、繋ぎ目の確認の邪魔になる
+            // （繋ぎ目に線があるように見える）。タイルの境目を見たいときはグリッドを使う。
+            if (!m_viewTiling) drawList->AddRect(zero, {zero.x + size.x, zero.y + size.y}, ImGui::GetColorU32(ImGuiCol_Border));
+            if (m_viewGrid) DrawUvGrid(drawList, zero, size, areaMin, areaMax);
         } else if (result != nullptr && !result->error.empty()) {
             drawList->AddText({areaMin.x + pad, areaMin.y + pad}, ui::ErrorColor(),
                               ui::Tr("このノードはエラーで評価できません。", "This node failed to evaluate."));
