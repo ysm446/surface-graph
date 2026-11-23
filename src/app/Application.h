@@ -81,6 +81,11 @@ private:
     // グラフ全体を列に並べ直す（graph::ArrangeColumns）。ノードを描いた後、エディタの中で呼ぶ。
     // ノードの移動は普段アンドゥに入れないが、これは 1 手として積む。
     void ArrangeGraph();
+    // メモの吹き出し（「設定 > ノードのメモを表示」）。ノードの下端のすぐ下に、先頭の数行を出す。
+    // ed::Begin と ed::End の間で呼ぶ。
+    void DrawGraphNodeNotes();
+    // 吹き出しの高さ（キャンバス座標。隙間を含む）。メモが無いか表示しないなら 0。整列で下を空けるのに使う。
+    float NodeNoteHeight(const graph::Node& node, float nodeWidth) const;
     std::vector<uint64_t> SelectedNodes() const;
     ImTextureID NodeThumbnail(uint64_t node, int output = 0) const;
 
@@ -165,6 +170,8 @@ private:
     bool m_fontSizeEditing = false;                               // 文字サイズのスライダーを掴んでいる
     bool m_englishUi = false;                                 // 設定に保存する言語
     bool m_showSettings = false;
+    bool m_showNodeNotes = true;  // ノードの下にメモの先頭を出す（settings.txt に保存）
+    uint64_t m_noteHoverNode = 0;  // メモの印か省略した吹き出しに載っているノード（全文をツールチップで出す）
 
     // 評価。スライダーを掴んでいる間は低解像度で評価し、離したらフル解像度で評価し直す。
     bool m_interactive = false;

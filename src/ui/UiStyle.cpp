@@ -227,11 +227,12 @@ Thumbnail ThumbnailButton(const char* id, ImTextureID texture, float size, bool 
 
 void ThumbnailImage(ImTextureID texture, float size, float aspect) {
     const ImVec2 frameMin = ImGui::GetCursorScreenPos();
-    // 枠は常に正方形。絵は長い辺を枠に合わせ、短い辺を中央に寄せる。
+    // 絵は長い辺を size に合わせる。場所の幅は常に size（並びを揃える）、高さは絵の高さだけ取る
+    // （横長の絵の上下に余白を残さない。ユーザー指定 2026-11-24）。縦長の絵は幅の中央に寄せる。
     const float safeAspect = (aspect > 0.0f) ? aspect : 1.0f;
     const float width = size * ((safeAspect >= 1.0f) ? 1.0f : safeAspect);
     const float height = size * ((safeAspect >= 1.0f) ? 1.0f / safeAspect : 1.0f);
-    const ImVec2 min(frameMin.x + (size - width) * 0.5f, frameMin.y + (size - height) * 0.5f);
+    const ImVec2 min(frameMin.x + (size - width) * 0.5f, frameMin.y);
     const ImVec2 max(min.x + width, min.y + height);
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -247,7 +248,7 @@ void ThumbnailImage(ImTextureID texture, float size, float aspect) {
     // 枠線は引かない。AddRect の線は半ピクセル内側に乗るので、ノードエディタの拡大率と
     // 掛け合わさると絵の輪郭とずれて見える。
 
-    ImGui::Dummy(ImVec2(size, size));
+    ImGui::Dummy(ImVec2(size, height));
 }
 
 namespace {

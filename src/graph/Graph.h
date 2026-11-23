@@ -109,6 +109,8 @@ struct Node {
     // グラフの解像度に対する 2 のべきの差（-2 なら 1/4）。0 で継承。幅と高さを別々に持つ。
     int resolutionShiftX = 0;
     int resolutionShiftY = 0;
+    // 置いた意図などのメモ（複数行、UTF-8）。評価には使わない（ハッシュに入れない）。
+    std::string note;
 
     bool operator==(const Node&) const = default;
 };

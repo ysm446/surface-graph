@@ -627,6 +627,7 @@ void Application::LoadSettings() {
                                     static_cast<int>(ui::kMaxFontSize));
         }
         if (key == "language") m_englishUi = (value == "en");
+        if (key == "showNodeNotes") m_showNodeNotes = (std::atoi(value.c_str()) != 0);
     }
     // 開発用の書き出し（スクリーンショット）と --language の指定は、保存した言語より優先する。
     if (m_options.uiScreenshotPath.empty() && m_options.language.empty()) {
@@ -645,6 +646,7 @@ void Application::SaveSettings() const {
     file << "uiScale=" << m_manualScale << "\n";
     file << "fontSize=" << m_fontSize << "\n";
     file << "language=" << (m_englishUi ? "en" : "ja") << "\n";
+    file << "showNodeNotes=" << (m_showNodeNotes ? 1 : 0) << "\n";
 }
 
 // ドックへは収めない（terrain-graph と同じ）。たまにしか触らない設定で作業面積を食わない。
@@ -707,6 +709,15 @@ void Application::DrawSettingsWindow() {
             m_fontSize = m_fontSizeEdit;
             changed = true;
         }
+        ui::EndPropertyTable();
+    }
+    ui::SectionHeader(ui::Tr("グラフ", "Graph"));
+    if (ui::BeginPropertyTable("settingsGraphRows")) {
+        changed |= ui::PropertyBool(ui::Tr("メモを表示", "Show Notes"), &m_showNodeNotes, true,
+                                    ui::Tr("ノードのメモの先頭を、ノードの下に吹き出しで出す。切ると見出しの印だけになり、"
+                                           "印に載せると全文が出る",
+                                           "Shows the start of each node's note below the node. When off, only the note "
+                                           "icon in the title remains; hover it to see the full note"));
         ui::EndPropertyTable();
     }
     ui::HintText(ui::Tr("設定は %%LOCALAPPDATA%%/surface-graph/settings.txt に保存する",

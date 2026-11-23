@@ -116,6 +116,7 @@ Json NodeToJson(const graph::Node& node) {
         json["resolutionShiftX"] = node.resolutionShiftX;
         json["resolutionShiftY"] = node.resolutionShiftY;
     }
+    if (!node.note.empty()) json["note"] = node.note;
     return json;
 }
 
@@ -134,6 +135,7 @@ bool NodeFromJson(const Json& json, graph::Node& node, std::string& unknownType)
     const int shift = IntOr(json, "resolutionShift", 0);
     node.resolutionShiftX = std::clamp(IntOr(json, "resolutionShiftX", shift), -4, 4);
     node.resolutionShiftY = std::clamp(IntOr(json, "resolutionShiftY", shift), -4, 4);
+    node.note = StringOr(json, "note", "");
     node.params.clear();
     const auto params = json.find("params");
     for (const graph::ParamDef& def : node.def->params) {

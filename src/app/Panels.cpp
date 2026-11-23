@@ -231,6 +231,17 @@ void Application::DrawParameterPanel() {
         ImGui::PopStyleColor();
     }
 
+    // メモはどの種類のノードにも共通（terrain-graph と同じ）。評価には使わないので、確定しても再評価しない。
+    // 確定は欄の外のクリック（Enter は改行）。確定するとアンドゥの 1 手になる。
+    if (ui::BeginPropertyTable("NoteRows")) {
+        ui::PropertyTextMultiline(ui::Tr("メモ", "Note"), node->note, 3,
+                                  ui::Tr("なぜこのノードを置いたか、などのメモ。ノードの下に表示する"
+                                         "（評価には影響しない）。欄の外をクリックで確定",
+                                         "A note such as why this node is here. Shown below the node "
+                                         "(no effect on evaluation). Click outside the field to confirm"));
+        ui::EndPropertyTable();
+    }
+
     if (!def.params.empty()) {
         if (ui::BeginPropertyTable("ParamRows")) {
             for (int i = 0; i < static_cast<int>(def.params.size()); ++i) DrawParamRow(*node, i);

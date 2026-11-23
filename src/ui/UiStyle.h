@@ -201,7 +201,8 @@ Thumbnail ThumbnailButton(const char* id, ImTextureID texture, float size, bool 
 // 一覧の行に置く小さなサムネイル。**選択枠は付けない。**
 // 行そのものが選択を示すので、画像側にも枠を出すと選択が二重に見える。
 // texture の ptr が 0 なら中身の代わりに枠だけを描く。
-// aspect は絵の縦横比（幅 / 高さ）。正方形でない絵は、枠の中央に縦横比を保って収める。
+// aspect は絵の縦横比（幅 / 高さ）。長い辺を size に合わせ、場所は幅 size × 絵の高さだけ取る
+// （横長の絵の上下に余白を作らない）。縦長の絵は幅の中央に寄せる。
 void ThumbnailImage(ImTextureID texture, float size, float aspect = 1.0f);
 
 // リンク切れのサムネイル。**画像が無いので、絵の代わりに警告の三角を描く。**

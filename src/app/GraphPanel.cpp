@@ -13,6 +13,8 @@
 #include <cmath>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 // ノードエディタのパネル。imgui-node-editor の上に、グラフモデル（m_graph）をそのまま描く。
 // ノードの位置はグラフモデルが持ち、エディタには毎回こちらから渡す。
@@ -66,6 +68,76 @@ ImVec4 CategoryColor(graph::NodeCategory category) {
         case graph::NodeCategory::Color:   return {0.80f, 0.70f, 0.40f, 1.0f};
         case graph::NodeCategory::Derive:  return {0.52f, 0.74f, 0.74f, 1.0f};
         default:                           return {0.84f, 0.84f, 0.80f, 1.0f};
+    }
+}
+
+// ノードに出すメモの行数の上限。長いメモは末尾を「…」にし、全文はツールチップで見せる。
+constexpr int kNodeNoteLines = 3;
+// メモの吹き出しの内側の余白と、ノード下端との隙間（キャンバス座標）。整列でもこの高さぶん下を空ける。
+constexpr float kNotePaddingX = 6.0f;
+constexpr float kNotePaddingY = 3.0f;
+constexpr float kNoteGap = 4.0f;
+
+// width で折り返した先頭の lines 行。収まらなければ最後の行の末尾を「…」にする（terrain-graph と同じ）。
+// **自前で文字ごとに折り返す。** ImGui の折り返しは空白や句読点を区切りに使うので、
+// 日本語の長い文では行の見積もりと描画が食い違う。改行はそのまま行の区切りにする。
+std::string NoteExcerpt(const std::string& note, float width, int lines) {
+    const auto advance = [](const std::string& text, size_t i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        return i + (c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4);
+    };
+    std::vector<std::string> wrapped;
+    std::string line;
+    for (size_t i = 0; i < note.size() && static_cast<int>(wrapped.size()) <= lines;) {
+        if (note[i] == '\n') {
+            wrapped.push_back(std::move(line));
+            line.clear();
+            ++i;
+            continue;
+        }
+        const size_t next = std::min(advance(note, i), note.size());
+        std::string candidate = line + note.substr(i, next - i);
+        if (!line.empty() && ImGui::CalcTextSize(candidate.c_str()).x > width) {
+            wrapped.push_back(std::move(line));
+            line = note.substr(i, next - i);
+        } else {
+            line = std::move(candidate);
+        }
+        i = next;
+    }
+    if (!line.empty() || wrapped.empty()) wrapped.push_back(std::move(line));
+    const bool truncated = static_cast<int>(wrapped.size()) > lines;
+    wrapped.resize(std::min<size_t>(wrapped.size(), static_cast<size_t>(lines)));
+    if (truncated) {
+        // 末尾の「…」が入るまで、最後の行を文字の境目で削る。
+        std::string& last = wrapped.back();
+        while (!last.empty() && ImGui::CalcTextSize((last + "…").c_str()).x > width) {
+            size_t cut = last.size() - 1;
+            while (cut > 0 && (static_cast<unsigned char>(last[cut]) & 0xC0) == 0x80) --cut;
+            last.resize(cut);
+        }
+        last += "…";
+    }
+    std::string result;
+    for (size_t i = 0; i < wrapped.size(); ++i) {
+        if (i) result += '\n';
+        result += wrapped[i];
+    }
+    return result;
+}
+
+// メモがあることを示す小さな印（紙に罫線 3 本。terrain-graph と同じ絵）。色はテーマの淡い文字色。
+void DrawNoteIcon() {
+    const ImVec2 size(10.0f, 12.0f);
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(size);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImU32 color = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImVec2 top(min.x, min.y + 2.0f);
+    drawList->AddRect(top, ImVec2(top.x + size.x, top.y + size.y), color, 1.5f);
+    for (int i = 0; i < 3; ++i) {
+        const float y = top.y + 3.0f + 2.5f * static_cast<float>(i);
+        drawList->AddLine(ImVec2(top.x + 2.5f, y), ImVec2(top.x + size.x - 2.5f, y), color);
     }
 }
 
@@ -177,7 +249,8 @@ void Application::ArrangeGraph() {
         if (position.x == FLT_MAX || position.y == FLT_MAX || size.x <= 0.0f) continue;
         indexOf[node.id] = boxes.size();
         ids.push_back(node.id);
-        boxes.push_back({position.x, position.y, size.x, size.y});
+        // メモの吹き出しも箱に含める（下のノードと重ならないように）。
+        boxes.push_back({position.x, position.y, size.x, size.y + NodeNoteHeight(node, size.x)});
     }
     std::vector<graph::LayoutEdge> edges;
     for (const graph::Link& link : m_graph.links) {
@@ -198,6 +271,38 @@ void Application::ArrangeGraph() {
     m_keepArrangeUndo = true;
     m_navigateCountdown = 2;
     PushStatus(LogLevel::Info, ui::Tr("グラフを整列しました（Ctrl+Z で戻せます）", "Arranged the graph (Ctrl+Z to undo)"));
+}
+
+float Application::NodeNoteHeight(const graph::Node& node, float nodeWidth) const {
+    if (!m_showNodeNotes || node.note.empty()) return 0.0f;
+    const std::string excerpt = NoteExcerpt(node.note, nodeWidth - kNotePaddingX * 2.0f, kNodeNoteLines);
+    return kNoteGap + ImGui::CalcTextSize(excerpt.c_str()).y + kNotePaddingY * 2.0f;
+}
+
+// ノードのメモの先頭を、ノードの下端のすぐ下に吹き出しとして出す（terrain-graph と同じ）。
+// **ノードの外に描く。** 中に描くとメモの有無や表示の切り替えでノードの高さが変わり、配置が崩れる。
+void Application::DrawGraphNodeNotes() {
+    if (!m_showNodeNotes) return;
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ImVec2 padding(kNotePaddingX, kNotePaddingY);
+    const ImU32 background = ImGui::GetColorU32(ImGuiCol_PopupBg, 0.92f);
+    const ImU32 border = ImGui::GetColorU32(ImGuiCol_Border);
+    const ImU32 text = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    for (const graph::Node& node : m_graph.nodes) {
+        if (node.note.empty()) continue;
+        const ImVec2 position = ed::GetNodePosition(ed::NodeId(node.id));
+        const ImVec2 size = ed::GetNodeSize(ed::NodeId(node.id));
+        // エディタがまだ知らないノード（このフレームに作ったもの）は飛ばす。
+        if (position.x == FLT_MAX || position.y == FLT_MAX || size.x <= 0.0f) continue;
+        const std::string excerpt = NoteExcerpt(node.note, size.x - padding.x * 2.0f, kNodeNoteLines);
+        const ImVec2 textSize = ImGui::CalcTextSize(excerpt.c_str());
+        const ImVec2 boxMin(position.x, position.y + size.y + kNoteGap);
+        const ImVec2 boxMax(position.x + size.x, boxMin.y + textSize.y + padding.y * 2.0f);
+        drawList->AddRectFilled(boxMin, boxMax, background, 4.0f);
+        drawList->AddRect(boxMin, boxMax, border, 4.0f);
+        drawList->AddText(ImVec2(boxMin.x + padding.x, boxMin.y + padding.y), text, excerpt.c_str());
+        if (excerpt != node.note && ImGui::IsMouseHoveringRect(boxMin, boxMax)) m_noteHoverNode = node.id;
+    }
 }
 
 void Application::DrawGraphNode(const graph::Node& node) {
@@ -255,6 +360,12 @@ void Application::DrawGraphNode(const graph::Node& node) {
         ImGui::Dummy({mark, textHeight});
         ImGui::SameLine(0.0f, 6.0f);
         ImGui::TextColored(ImVec4(0.88f, 0.88f, 0.88f, 1.0f), "%s", def.label.Get());
+        // メモの印。載せると全文をツールチップで見せる。
+        if (!node.note.empty()) {
+            ImGui::SameLine(0.0f, 6.0f);
+            DrawNoteIcon();
+            if (ImGui::IsItemHovered()) m_noteHoverNode = node.id;
+        }
     }
 
     ImGui::Dummy({width, 4.0f});
@@ -459,6 +570,8 @@ void Application::DrawGraphPanel() {
 
     for (const graph::Node& node : m_graph.nodes) DrawGraphNode(node);
 
+    DrawGraphNodeNotes();
+
     // 整列（右上のボタンからの要求）。ノードを描いた後でないと大きさが取れない。
     if (m_arrangeCountdown > 0 && --m_arrangeCountdown == 0) ArrangeGraph();
 
@@ -552,7 +665,14 @@ void Application::DrawGraphPanel() {
 
     bool duplicate = false, remove = false;
     ed::Suspend();
-    if (hoveredResult != nullptr && !hoveredResult->error.empty()) {
+    // メモの全文（印か、省略した吹き出しに載っているとき）。
+    if (const graph::Node* noted = m_graph.FindNode(std::exchange(m_noteHoverNode, 0)); noted != nullptr && !noted->note.empty()) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ui::Scaled(360.0f));
+        ImGui::TextUnformatted(noted->note.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    } else if (hoveredResult != nullptr && !hoveredResult->error.empty()) {
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
         ImGui::TextUnformatted(hoveredResult->error.c_str());
