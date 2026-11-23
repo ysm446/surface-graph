@@ -85,6 +85,10 @@ public:
     // 直近の Evaluate でディスパッチしたノードの数。
     uint32_t LastEvaluatedCount() const { return m_lastEvaluated; }
 
+    // 画像ファイルのテクスチャ（RGBA8、表示色のまま）。読み込めなければ nullptr。
+    // 初回と、ファイルが書き換わったときに読み直す。Image ノードと、3D ビューの UV チェッカーが使う。
+    rhi::GpuTexture* AcquireImage(ID3D12GraphicsCommandList* commandList, const std::filesystem::path& path);
+
 private:
     struct DefCache {
         graph::ParamLayout layout;
@@ -93,8 +97,6 @@ private:
 
     const DefCache& CacheFor(const graph::NodeDef& def);
     PooledTexture Acquire(graph::TextureSize size, DXGI_FORMAT format);
-    // 画像ファイルのテクスチャ。読み込めなければ nullptr。初回と、ファイルが書き換わったときに読み直す。
-    rhi::GpuTexture* AcquireImage(ID3D12GraphicsCommandList* commandList, const std::filesystem::path& path);
     void Release(PooledTexture& texture);
     void ReleaseResult(NodeResult& result);
     bool EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph::Graph& graph,

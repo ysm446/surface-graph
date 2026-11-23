@@ -307,9 +307,6 @@ void Application::DrawGraphSettingsPanel() {
                                    "Random seed of the whole graph. Changing it changes every random node."))) {
             m_graph.seed = static_cast<uint32_t>(seed);
         }
-        ui::PropertyLabelEmpty("##randomGraphSeed");
-        if (ui::Button(ui::Tr("ランダム", "Random"))) m_graph.seed = static_cast<uint32_t>(RandomSeed());
-        ui::PropertyEnd();
         ui::EndPropertyTable();
     }
 
@@ -347,6 +344,64 @@ void Application::DrawGraphSettingsPanel() {
     ImGui::End();
 }
 
+namespace {
+
+// 2D ビューの UV グリッド。origin / tileSize は画像 1 枚ぶんの画面上の矩形（3×3 なら左上の 1 枚目）。
+// 3×3 のときは中央の 1 枚が UV の 0〜1 になる。
+// 線は UV の整数（0, 1, 2…、タイルの境目）にだけ引き、画像の外側の領域いっぱいまで伸ばす。内側は分けない。
+// 色は付けず、原点を通る線（u = 0 と v = 0）だけを濃くする（ユーザー指定 2026-11-24）。
+// 座標の数字は、領域の上端（u）と左端（v）に薄く載せる。原点は左上で、v は下へ増える（シェーダの UV と同じ）。
+// 引いて線が詰まったら（画面で 40 px 未満）、2, 4, 8… おきに間引く。
+void DrawUvGrid(ImDrawList* drawList, const ImVec2& origin, const ImVec2& tileSize, int tiles, const ImVec2& areaMin,
+                const ImVec2& areaMax) {
+    if (tileSize.x < 1.0f || tileSize.y < 1.0f) return;
+    const ImVec2 zero = (tiles == 3) ? ImVec2(origin.x + tileSize.x, origin.y + tileSize.y) : origin;
+    const auto stepFor = [](float pixelsPerUnit) {
+        int step = 1;
+        while (pixelsPerUnit * static_cast<float>(step) < 40.0f && step < (1 << 20)) step *= 2;
+        return step;
+    };
+    const int stepU = stepFor(tileSize.x);
+    const int stepV = stepFor(tileSize.y);
+    const ImU32 lineColor = IM_COL32(255, 255, 255, 45);
+    const ImU32 axisLineColor = IM_COL32(255, 255, 255, 130);
+    const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImU32 shadowColor = IM_COL32(0, 0, 0, 160);
+    const float pad = ui::Scaled(4.0f);
+    const auto label = [&](float x, float y, int value) {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%d", value);
+        drawList->AddText({x + 1.0f, y + 1.0f}, shadowColor, text);
+        drawList->AddText({x, y}, textColor, text);
+    };
+
+    // 縦の線（u が整数）。見えている範囲の整数だけを回す。
+    const int firstU = static_cast<int>(std::floor((areaMin.x - zero.x) / tileSize.x / stepU)) * stepU;
+    const int lastU = static_cast<int>(std::ceil((areaMax.x - zero.x) / tileSize.x));
+    for (int u = firstU; u <= lastU; u += stepU) {
+        const float x = std::round(zero.x + static_cast<float>(u) * tileSize.x) + 0.5f;
+        if (x < areaMin.x || x > areaMax.x) continue;
+        drawList->AddLine({x, areaMin.y}, {x, areaMax.y}, (u == 0) ? axisLineColor : lineColor);
+        // 右端で切れる数字は出さない。
+        char text[16];
+        std::snprintf(text, sizeof(text), "%d", u);
+        if (x + pad + ImGui::CalcTextSize(text).x < areaMax.x) label(x + pad, areaMin.y + pad, u);
+    }
+    // 横の線（v が整数）。左上の角は u の数字と重なるので、v の数字は線の少し下に置く。
+    const int firstV = static_cast<int>(std::floor((areaMin.y - zero.y) / tileSize.y / stepV)) * stepV;
+    const int lastV = static_cast<int>(std::ceil((areaMax.y - zero.y) / tileSize.y));
+    const float lineHeight = ImGui::GetTextLineHeight();
+    for (int v = firstV; v <= lastV; v += stepV) {
+        const float y = std::round(zero.y + static_cast<float>(v) * tileSize.y) + 0.5f;
+        if (y < areaMin.y || y > areaMax.y) continue;
+        drawList->AddLine({areaMin.x, y}, {areaMax.x, y}, (v == 0) ? axisLineColor : lineColor);
+        const float labelY = std::max(y + pad, areaMin.y + pad + lineHeight + pad);
+        if (labelY + lineHeight < areaMax.y) label(areaMin.x + pad, labelY, v);
+    }
+}
+
+}  // namespace
+
 void Application::DrawView2dPanel() {
     if (m_focusDefaultTabs > 0) ImGui::SetNextWindowFocus();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -365,22 +420,22 @@ void Application::DrawView2dPanel() {
 
     // 上端の操作列。
     const float pad = ui::Scaled(8.0f);
-    ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + pad * 0.5f});
+    // 操作列の上下の余白は同じ幅（margin）にする。下は ItemSpacing に任せず、列の下端から測る。
+    const float margin = pad * 0.5f;
+    ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + margin});
+    const float toolbarBottom = ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight();
     ImGui::AlignTextToFramePadding();
-    if (node != nullptr) {
-        ImGui::Text("%s  #%llu", node->def->label.Get(), static_cast<unsigned long long>(node->id));
-        if (result != nullptr && result->width != 0) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%u × %u", result->width, result->height);
-        }
-    } else {
-        ImGui::TextDisabled("%s", ui::Tr("出力ピンをクリック（またはノードをダブルクリック）すると、その出力が出ます。",
-                                         "Click an output pin (or double-click a node) to show its output."));
-    }
-    ImGui::SameLine(0.0f, pad * 2.0f);
+    // ノード名と解像度は操作列に置かず、画像の領域の左下に薄く重ねる（下の「情報の重ね書き」）。
     ImGui::Checkbox(ui::Tr("3×3 タイル", "3x3 Tile"), &m_viewTile);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::SetTooltip("%s", ui::Tr("繋ぎ目を確かめるために 3×3 に並べる。", "Repeats the image 3x3 to check the seams."));
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox(ui::Tr("グリッド", "Grid"), &m_viewGrid);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("%s", ui::Tr("UV のグリッドと座標を重ねる。原点は左上（u は右、v は下へ増える。シェーダの UV と同じ向き）。",
+                                       "Overlays the UV grid and coordinates. The origin is top-left "
+                                       "(u grows to the right, v downward, as in the shaders)."));
     }
     ImGui::SameLine();
     static const char* const kChannels[] = {"RGB", "R", "G", "B", "A"};
@@ -403,7 +458,7 @@ void Application::DrawView2dPanel() {
     }
 
     // 画像の領域。
-    const ImVec2 areaMin = {ImGui::GetWindowPos().x, ImGui::GetCursorScreenPos().y + pad * 0.5f};
+    const ImVec2 areaMin = {ImGui::GetWindowPos().x, toolbarBottom + margin};
     const ImVec2 areaMax = {ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y};
     const ImVec2 areaSize = {areaMax.x - areaMin.x, areaMax.y - areaMin.y};
     if (areaSize.x > 8.0f && areaSize.y > 8.0f) {
@@ -462,9 +517,38 @@ void Application::DrawView2dPanel() {
                 }
             }
             drawList->AddRect(origin, {origin.x + size.x * tiles, origin.y + size.y * tiles}, ImGui::GetColorU32(ImGuiCol_Border));
+            if (m_viewGrid) DrawUvGrid(drawList, origin, size, tiles, areaMin, areaMax);
         } else if (result != nullptr && !result->error.empty()) {
             drawList->AddText({areaMin.x + pad, areaMin.y + pad}, ui::ErrorColor(),
                               ui::Tr("このノードはエラーで評価できません。", "This node failed to evaluate."));
+        }
+
+        // 情報の重ね書き。左下に、表示しているノードの名前・番号・解像度・形式を薄く出す。
+        // 画像の上に載るので、文字の下に 1 px の影を付けて明るい絵の上でも読めるようにする。
+        {
+            const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+            const ImU32 shadowColor = IM_COL32(0, 0, 0, 160);
+            const auto overlayText = [&](const ImVec2& position, const char* text) {
+                drawList->AddText({position.x + 1.0f, position.y + 1.0f}, shadowColor, text);
+                drawList->AddText(position, textColor, text);
+            };
+            const float lineHeight = ImGui::GetTextLineHeight();
+            char line[192];
+            if (node != nullptr) {
+                const bool hasSize = (result != nullptr && result->width != 0);
+                const bool color = (m_viewOutput < outputCount && result->outputs[m_viewOutput].type == graph::PinType::Color);
+                if (hasSize) {
+                    std::snprintf(line, sizeof(line), "%u × %u  %s", result->width, result->height, color ? "RGBA16F" : "L16F");
+                    overlayText({areaMin.x + pad, areaMax.y - pad - lineHeight}, line);
+                }
+                std::snprintf(line, sizeof(line), "%s  #%llu", node->def->label.Get(), static_cast<unsigned long long>(node->id));
+                overlayText({areaMin.x + pad, areaMax.y - pad - lineHeight * (hasSize ? 2.0f : 1.0f) - (hasSize ? 2.0f : 0.0f)}, line);
+            } else {
+                const char* hint = ui::Tr("出力ピンをクリック（またはノードをダブルクリック）すると、その出力が出ます。",
+                                          "Click an output pin (or double-click a node) to show its output.");
+                const ImVec2 hintSize = ImGui::CalcTextSize(hint);
+                overlayText({center.x - hintSize.x * 0.5f, center.y - hintSize.y * 0.5f}, hint);
+            }
         }
         drawList->PopClipRect();
     }
@@ -619,23 +703,23 @@ void Application::DrawView3dPanel() {
 
     engine::PreviewSettings& settings = m_previewSettings;
     const float pad = ui::Scaled(8.0f);
-    ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + pad * 0.5f});
+    // 操作列の上下の余白は同じ幅（margin）にする。下は ItemSpacing に任せず、列の下端から測る。
+    const float margin = pad * 0.5f;
+    ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + margin});
+    const float toolbarBottom = ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight();
     ImGui::AlignTextToFramePadding();
     static const ui::LocalizedText kShapes[] = {{"球", "Sphere"}, {"平面", "Plane"}};
     const auto shapes = ui::Tr(kShapes);
     ImGui::SetNextItemWidth(ui::TextScaled(72.0f));
-    ImGui::Combo("##shape", &settings.shape, shapes.data(), static_cast<int>(shapes.size()));
+    // 形はグラフに保存する（Graph::previewShape）。アンドゥの起点にも写して、1 手として積まない。
+    settings.shape = m_graph.previewShape;
+    if (ImGui::Combo("##shape", &settings.shape, shapes.data(), static_cast<int>(shapes.size()))) {
+        m_graph.previewShape = settings.shape;
+        m_committed.previewShape = settings.shape;
+    }
     ImGui::SameLine();
     if (ImGui::Button(ui::Tr("表示設定", "View Settings"))) ImGui::OpenPopup("##view3dSettings");
-    ImGui::SameLine();
-    if (ImGui::Button(ui::Tr("視点を戻す", "Reset View"))) {
-        const engine::PreviewSettings defaults;
-        settings.yaw = defaults.yaw;
-        settings.pitch = defaults.pitch;
-        settings.distance = defaults.distance;
-        settings.panX = 0.0f;
-        settings.panY = 0.0f;
-    }
+    // 「視点を戻す」はボタンではなく F キー（3D ビューに載せて押す。terrain-graph のビューポートと同じキー）。
     if (m_graph.FindMaterialNode() == nullptr) {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::WarnColor()), "%s",
@@ -664,13 +748,19 @@ void Application::DrawView3dPanel() {
                               defaults.environmentIntensity);
             ui::PropertyBool(ui::Tr("空を表示", "Show Sky"), &settings.showSky, defaults.showSky,
                              ui::Tr("背景に、映り込みに使っている空を出す。", "Shows the sky used for reflections in the background."));
+            ui::PropertyBool(ui::Tr("UV チェッカー", "UV Checker"), &settings.uvChecker, defaults.uvChecker,
+                             ui::Tr("Albedo の代わりに確認用の格子の画像を貼る。UV の向きと繰り返しを確かめる。"
+                                    "法線・ラフネスなどグラフのマップは使わない（形状の UV を見るため）。",
+                                    "Shows a checker image instead of Albedo to check the UV direction and tiling. "
+                                    "The graph's maps (normal, roughness...) are not used, to show the shape's UV."));
             ui::EndPropertyTable();
         }
+        ui::HintText("%s", ui::Tr("3D ビューに載せて F で視点を戻す", "Press F over the 3D view to reset the view"));
         ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
 
-    const ImVec2 areaMin = {ImGui::GetWindowPos().x, ImGui::GetCursorScreenPos().y + pad * 0.5f};
+    const ImVec2 areaMin = {ImGui::GetWindowPos().x, toolbarBottom + margin};
     const ImVec2 areaMax = {ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y};
     const ImVec2 areaSize = {areaMax.x - areaMin.x, areaMax.y - areaMin.y};
     m_view3dWidth = (areaSize.x > 8.0f) ? static_cast<uint32_t>(areaSize.x) : 0;
@@ -704,6 +794,16 @@ void Application::DrawView3dPanel() {
         }
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f) {
             settings.distance = std::clamp(settings.distance * std::pow(0.9f, io.MouseWheel), 1.2f, 20.0f);
+        }
+        // F で視点を戻す（向き・距離・パン）。ライトと表示設定はそのまま。
+        if (ImGui::IsItemHovered() && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift &&
+            ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+            const engine::PreviewSettings defaults;
+            settings.yaw = defaults.yaw;
+            settings.pitch = defaults.pitch;
+            settings.distance = defaults.distance;
+            settings.panX = 0.0f;
+            settings.panY = 0.0f;
         }
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const rhi::GpuTexture& texture = m_preview.Texture();

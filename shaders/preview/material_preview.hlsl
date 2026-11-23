@@ -157,11 +157,13 @@ Hit IntersectSphere(float3 origin, float3 direction) {
     hit.position = origin + direction * t;
     hit.normal = normalize(hit.position);
     // 経度 × 緯度。横は縦の 2 倍の長さがあるので、横に 2 枚ぶん貼ってテクセルを正方形に近づける。
-    const float longitude = atan2(hit.normal.z, hit.normal.x);
+    // u は外から見て右へ増える向き（-z 回り）。逆にすると画像が鏡に映したように左右反転する
+    // （UV チェッカーの文字で確かめた）。外から見て「u が右・v が下」なので、tangent × bitangent = -normal。
+    const float longitude = atan2(-hit.normal.z, hit.normal.x);
     const float latitude = acos(clamp(hit.normal.y, -1.0, 1.0));
     hit.uv = float2(longitude / PI, latitude / PI) * gUvScale;
-    hit.tangent = normalize(float3(-hit.normal.z, 0.0, hit.normal.x) + float3(1e-5, 0.0, 0.0));
-    hit.bitangent = normalize(cross(hit.normal, hit.tangent));
+    hit.tangent = normalize(float3(hit.normal.z, 0.0, -hit.normal.x) + float3(1e-5, 0.0, 0.0));
+    hit.bitangent = normalize(cross(hit.tangent, hit.normal));
     return hit;
 }
 

@@ -127,6 +127,22 @@ void MaterialPreview::Render(ID3D12GraphicsCommandList* commandList, const graph
         }
     }
 
+    // UV チェッカー。形状の UV を見るためのものなので、グラフのマップは一切使わず（法線・ラフネス・視差も
+    // 既定の平らな値）、Albedo に確認用の画像だけを貼る（Material Output が無くても出す）。
+    if (settings.uvChecker) {
+        std::memset(constants.maps, 0, sizeof(constants.maps));
+        constants.connected = 0;
+        constants.colorMask = 0;
+        const std::filesystem::path path = std::filesystem::path(SG_ASSET_DIR) / L"textures" / L"uv_checker.png";
+        if (rhi::GpuTexture* checker = evaluator.AcquireImage(commandList, path)) {
+            const uint32_t albedo = static_cast<uint32_t>(graph::MaterialChannel::Albedo);
+            rhi::TransitionIfNeeded(commandList, *checker, kReadState);
+            constants.maps[albedo] = checker->SrvIndex();
+            constants.connected |= 1u << albedo;
+            constants.colorMask |= 1u << albedo;
+        }
+    }
+
     // カメラは原点のまわりを回り、パンのぶんだけ平行にずれる。
     const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
     const Vec3 offset = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};

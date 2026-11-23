@@ -179,6 +179,7 @@ std::string GraphToJson(const graph::Graph& graph) {
         root["height"] = graph.height;
     }
     root["seed"] = graph.seed;
+    root["preview"] = {{"shape", graph.previewShape == 1 ? "plane" : "sphere"}};
     root["nodes"] = nodes;
     root["links"] = links;
     root["exposedParams"] = exposed;
@@ -208,6 +209,9 @@ bool GraphFromJson(const std::string& text, graph::Graph& outGraph, std::string&
     graph.height = graph::ClampResolution(static_cast<uint32_t>(std::max(0, IntOr(root, "height", resolution))));
     if (const auto seed = root.find("seed"); seed != root.end() && seed->is_number_unsigned()) {
         graph.seed = seed->get<uint32_t>();
+    }
+    if (const auto preview = root.find("preview"); preview != root.end() && preview->is_object()) {
+        graph.previewShape = (StringOr(*preview, "shape", "sphere") == "plane") ? 1 : 0;
     }
 
     uint64_t maxId = 0;

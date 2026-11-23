@@ -93,8 +93,10 @@ bool Application::Initialize(const StartupOptions& options) {
     ui::SetLanguage(ui::Language::Japanese);
     if (m_options.language == "en") ui::SetLanguage(ui::Language::English);
 
-    if (options.previewShape >= 0) m_previewSettings.shape = options.previewShape;
     if (options.showLightGizmo) m_lightGizmoUntil = 1.0e12;
+    if (options.showSettings) m_showSettings = true;
+    if (options.uvChecker) m_previewSettings.uvChecker = true;
+    if (options.viewGrid) m_viewGrid = true;
     if (options.arrange) m_arrangeCountdown = 4;  // ノードを 1 度描いて、大きさが決まってから
 
     LoadSettings();
@@ -235,6 +237,7 @@ void Application::DrawUi() {
     DrawParameterPanel();
     if (m_focusDefaultTabs > 0) --m_focusDefaultTabs;
 
+    DrawSettingsWindow();
     DrawConfirmDiscard();
     // スクリーンショットにはトーストを写さない。
     if (!Headless()) m_toasts.Draw();
@@ -292,9 +295,9 @@ void Application::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(ui::Tr("ウィンドウ", "Window"))) {
-        DrawScaleMenu();
-        ImGui::Separator();
         if (ImGui::MenuItem(ui::Tr("レイアウトを初期化", "Reset Layout"))) m_rebuildLayout = true;
+        ImGui::Separator();
+        ImGui::MenuItem(ui::Tr("設定", "Settings"), nullptr, &m_showSettings);
         ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -403,8 +406,11 @@ void Application::CommitEdits() {
 
 void Application::Undo() {
     if (m_undoStack.empty()) return;
+    // 3D ビューの形はアンドゥの対象にしない（いまの形を持ち越す）。
+    const int previewShape = m_graph.previewShape;
     m_redoStack.push_back(std::move(m_graph));
     m_graph = std::move(m_undoStack.back());
+    m_graph.previewShape = previewShape;
     m_undoStack.pop_back();
     m_committed = m_graph;
     m_placeAllNodes = true;
@@ -413,8 +419,10 @@ void Application::Undo() {
 
 void Application::Redo() {
     if (m_redoStack.empty()) return;
+    const int previewShape = m_graph.previewShape;
     m_undoStack.push_back(std::move(m_graph));
     m_graph = std::move(m_redoStack.back());
+    m_graph.previewShape = previewShape;
     m_redoStack.pop_back();
     m_committed = m_graph;
     m_placeAllNodes = true;
@@ -502,6 +510,8 @@ void Application::RunPendingAction() {
 }
 
 void Application::ResetDocumentState() {
+    // --preview-shape（スクリーンショットの確認用）は、グラフに保存した形より優先する。
+    if (m_options.previewShape >= 0) m_graph.previewShape = m_options.previewShape;
     m_committed = m_graph;
     m_saved = m_graph;
     m_undoStack.clear();
@@ -583,6 +593,10 @@ float Application::DesiredUiScale() const {
 // UI を拡大したぶんウィンドウも大きくする（terrain-graph と同じ）。作業面積（論理サイズ）が
 // 1920x1080 のままで、文字と部品だけが大きくなる。
 void Application::ApplyUiScale() {
+    // 文字サイズは拡大率と別に効く。ウィンドウの大きさは変えない
+    // （作業面積は拡大率で決まるもので、文字の大小で動かすものではない）。
+    // 開発用のスクリーンショットは、手元の設定によらず既定の大きさで撮る。
+    m_imgui.SetFontSize(m_options.uiScreenshotPath.empty() ? static_cast<float>(m_fontSize) : ui::kDefaultFontSize);
     const float desired = DesiredUiScale();
     if (std::abs(desired - m_imgui.UiScale()) < 0.001f) return;
     // ドックの分割も同じ比率で広げる。そのままだと、増えたぶんが中央のパネルだけに入る。
@@ -607,6 +621,15 @@ void Application::LoadSettings() {
         const std::string value = line.substr(split + 1);
         if (key == "followSystemScale") m_followSystemScale = (std::atoi(value.c_str()) != 0);
         if (key == "uiScale") m_manualScale = std::clamp(static_cast<float>(std::atof(value.c_str())), 0.5f, 3.0f);
+        if (key == "fontSize") {
+            m_fontSize = std::clamp(std::atoi(value.c_str()), static_cast<int>(ui::kMinFontSize),
+                                    static_cast<int>(ui::kMaxFontSize));
+        }
+        if (key == "language") m_englishUi = (value == "en");
+    }
+    // 開発用の書き出し（スクリーンショット）と --language の指定は、保存した言語より優先する。
+    if (m_options.uiScreenshotPath.empty() && m_options.language.empty()) {
+        ui::SetLanguage(m_englishUi ? ui::Language::English : ui::Language::Japanese);
     }
 }
 
@@ -619,31 +642,75 @@ void Application::SaveSettings() const {
     if (!file) return;
     file << "followSystemScale=" << (m_followSystemScale ? 1 : 0) << "\n";
     file << "uiScale=" << m_manualScale << "\n";
+    file << "fontSize=" << m_fontSize << "\n";
+    file << "language=" << (m_englishUi ? "en" : "ja") << "\n";
 }
 
-// 値を変えるだけ。反映は次のフレームの先頭（ApplyUiScale）。
-void Application::DrawScaleMenu() {
-    if (!ImGui::BeginMenu(ui::Tr("表示スケール", "Display Scale"))) return;
-    char label[96];
-    std::snprintf(label, sizeof(label), ui::Tr("Windows に合わせる (%.0f%%)", "Follow Windows (%.0f%%)"),
-                  m_imgui.MonitorScale() * 100.0f);
-    bool changed = false;
-    if (ImGui::MenuItem(label, nullptr, m_followSystemScale)) {
-        m_followSystemScale = !m_followSystemScale;
-        changed = true;
+// ドックへは収めない（terrain-graph と同じ）。たまにしか触らない設定で作業面積を食わない。
+// 値を変えるだけ。拡大率と文字サイズの反映は次のフレームの先頭（ApplyUiScale）。
+void Application::DrawSettingsWindow() {
+    if (!m_showSettings) return;
+    ImGui::SetNextWindowSize(ImVec2(ui::Scaled(460.0f), ui::Scaled(360.0f)), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(ui::Tr("設定###Settings", "Settings###Settings"), &m_showSettings)) {
+        ImGui::End();
+        return;
     }
-    ImGui::Separator();
-    constexpr float kScales[] = {1.0f, 1.25f, 1.5f, 1.75f, 2.0f};
-    for (const float scale : kScales) {
-        std::snprintf(label, sizeof(label), "%.0f%%", scale * 100.0f);
-        const bool selected = !m_followSystemScale && std::abs(m_manualScale - scale) < 0.01f;
-        if (ImGui::MenuItem(label, nullptr, selected)) {
-            m_followSystemScale = false;
-            m_manualScale = scale;
+    bool changed = false;
+    ui::SectionHeader("UI", ui::Tr("拡大するとウィンドウも同じ倍率で大きくなる（作業面積は変わらない）",
+                                   "Scaling up also enlarges the window by the same factor (the working area stays the same)"));
+    if (ui::BeginPropertyTable("settingsUiRows")) {
+        // 言語の名前はどちらの言語でも訳さない（読めない言語に切り替えても戻せるように）。
+        static const char* const kLanguageLabels[] = {"日本語", "English"};
+        int language = m_englishUi ? 1 : 0;
+        if (ui::PropertyCombo(ui::Tr("言語", "Language"), &language, kLanguageLabels, IM_ARRAYSIZE(kLanguageLabels), 0,
+                              ui::Tr("UI の表示言語。英語のほうが自然な語（ノード名、ピン名など）はどちらでも英語",
+                                     "Display language of the UI. Terms that read better in English "
+                                     "(node and pin names etc.) stay in English"))) {
+            m_englishUi = (language == 1);
+            ui::SetLanguage(m_englishUi ? ui::Language::English : ui::Language::Japanese);
             changed = true;
         }
+
+        ui::PropertyValue(ui::Tr("表示スケール", "Display Scale"), "%.0f%%  (Windows)", m_imgui.MonitorScale() * 100.0f);
+        changed |= ui::PropertyBool(ui::Tr("スケール追従", "Follow Scale"), &m_followSystemScale, false,
+                                    ui::Tr("Windows の表示スケール（DPI）に UI の大きさを合わせる。切ると下の拡大率で描く",
+                                           "Match the UI size to the Windows display scale (DPI). "
+                                           "When off, the scale below is used"));
+        if (!m_followSystemScale) {
+            static const char* const kScaleLabels[] = {"100%", "125%", "150%", "175%", "200%"};
+            constexpr float kScaleValues[] = {1.0f, 1.25f, 1.5f, 1.75f, 2.0f};
+            int selected = 0;
+            for (int i = 0; i < IM_ARRAYSIZE(kScaleValues); ++i) {
+                if (std::abs(kScaleValues[i] - m_manualScale) < 0.01f) selected = i;
+            }
+            if (ui::PropertyCombo(ui::Tr("拡大率", "Scale"), &selected, kScaleLabels, IM_ARRAYSIZE(kScaleLabels), 0,
+                                  ui::Tr("UI の大きさ。作業面積は変わらない", "Size of the UI. The working area stays the same"))) {
+                m_manualScale = kScaleValues[selected];
+                changed = true;
+            }
+        }
+
+        // 文字だけの大きさ。拡大率と違って余白や部品の幅は変わらない。
+        // **ドラッグを離したときに適用する**（ユーザー指定 2026-11-24）。動かしている間に文字が変わると、
+        // スライダー自身の幅や位置まで動いて、掴んだ所とつまみがずれる。編集中の値は m_fontSizeEdit に持ち、
+        // どの部品も掴んでいないとき（離した後、直接入力の確定、既定に戻すボタン）に m_fontSize へ写す。
+        if (!m_fontSizeEditing) m_fontSizeEdit = m_fontSize;
+        ui::PropertyInt(ui::Tr("文字サイズ", "Font Size"), &m_fontSizeEdit, static_cast<int>(ui::kMinFontSize),
+                        static_cast<int>(ui::kMaxFontSize), static_cast<int>(ui::kDefaultFontSize),
+                        ui::Tr("UI 全体の文字の大きさ（px）。拡大率とは別に掛かる。"
+                               "部品の高さは文字から決まるので、行の高さも一緒に変わる。ドラッグを離したときに変わる",
+                               "Text size of the whole UI (px), applied on top of the scale. "
+                               "Row heights follow the text size. Applied when the drag is released"));
+        m_fontSizeEditing = ImGui::IsAnyItemActive();
+        if (!m_fontSizeEditing && m_fontSizeEdit != m_fontSize) {
+            m_fontSize = m_fontSizeEdit;
+            changed = true;
+        }
+        ui::EndPropertyTable();
     }
-    ImGui::EndMenu();
+    ui::HintText(ui::Tr("設定は %%LOCALAPPDATA%%/surface-graph/settings.txt に保存する",
+                        "Saved to %%LOCALAPPDATA%%/surface-graph/settings.txt"));
+    ImGui::End();
     if (changed) SaveSettings();
 }
 

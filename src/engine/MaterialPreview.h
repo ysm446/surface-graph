@@ -32,6 +32,9 @@ struct PreviewSettings {
     // Displacement 1 が、タイル 1 枚の一辺の何倍の高さに当たるか。0 で視差なし。
     float displacementScale = 0.03f;
     bool showSky = false;
+    // Albedo の代わりに UV チェッカー（assets/textures/uv_checker.png）を貼る。UV の向きと繰り返しの確認用。
+    // 法線や視差はグラフのまま。
+    bool uvChecker = false;
 };
 
 // 3D ビューの描画。Material Output に繋がったマップを、球か平面に貼って RGBA8 のテクスチャへ描く。

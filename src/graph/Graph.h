@@ -138,6 +138,9 @@ struct Graph {
     uint32_t width = 1024;
     uint32_t height = 1024;
     uint32_t seed = 0;
+    // 3D ビューの形（0 = 球、1 = 平面）。素材ごとに見たい形が違うので、グラフに保存する。
+    // 評価には関わらない（ハッシュに入れない）。変えても未保存にはなるが、アンドゥの対象にはしない。
+    int previewShape = 0;
     std::vector<Node> nodes;
     std::vector<Link> links;
     std::vector<ExposedParam> exposedParams;

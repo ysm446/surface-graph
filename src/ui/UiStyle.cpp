@@ -38,15 +38,14 @@ constexpr ImVec4 kFrameBgActive = Gray(0.255f); // #414141
 constexpr ImVec4 kHeaderBg = Gray(0.196f);      // #323232
 constexpr ImVec4 kHeaderHovered = Gray(0.235f); // #3C3C3C
 constexpr ImVec4 kHeaderActive = Gray(0.290f);  // #4A4A4A
-constexpr ImVec4 kBorder = Gray(0.204f);        // #343434
-// タブ。**明度の 3 段（帯 < 非選択 < 選択）だけで状態を表す。**
-// 帯（タブを並べる下地）を一番暗くすることで、タブが板として浮いて見える。
-constexpr ImVec4 kTab = Gray(0.169f);           // #2B2B2B 非選択
-constexpr ImVec4 kTabHovered = Gray(0.212f);    // #363636
+constexpr ImVec4 kBorder = Gray(0.110f);        // #1C1C1C（明度 11%。ユーザー指定 2026-11-24）
+// 項目の見出しの帯（SectionHeader）。ウィンドウの地 #1E1E1E より一段明るい。
+constexpr ImVec4 kSectionBand = Gray(0.153f);   // #272727
+// タブ。**選択中のタブだけを板として描く。** 非選択は板を出さず帯の上に文字だけ置き、
+// マウスを乗せたときだけ薄い板を出す（明度は 帯 < ホバー < 選択）。
+constexpr ImVec4 kTab = Gray(0.0f, 0.0f);       // 透明 非選択（板なし）
+constexpr ImVec4 kTabHovered = Gray(0.169f);    // #2B2B2B 薄い板
 constexpr ImVec4 kTabSelected = Gray(0.243f);   // #3E3E3E 選択
-// 選択中のタブの上辺に引く線。**色は付けない。**
-// 明度だけで階層を作る方針に合わせ、中身との繋がりを示す控えめな線に留める。
-constexpr ImVec4 kTabOverline = Gray(0.400f);   // #666666
 constexpr ImVec4 kSeparator = Gray(0.220f);     // #383838
 constexpr ImVec4 kGrab = Gray(0.376f);          // #606060
 constexpr ImVec4 kGrabActive = Gray(0.510f);    // #828282
@@ -218,7 +217,9 @@ Thumbnail ThumbnailButton(const char* id, ImTextureID texture, float size, bool 
     // 天球のサムネイルは HDR の読み込みを伴うので 1 フレームに 1 枚ずつ作られ、
     // 未生成の枠が必ず一覧に並ぶ。
     if (texture != ImTextureID_Invalid) {
-        ImGui::GetWindowDrawList()->AddImage(texture, min, max);
+        // 絵も枠と同じ角丸で切る。四角のまま描くと、角丸の枠の外に角が残る。
+        ImGui::GetWindowDrawList()->AddImageRounded(texture, min, max, ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                                                    IM_COL32_WHITE, ImGui::GetStyle().FrameRounding);
     }
     ThumbnailFrame(min, max, selected, state.hovered);
     return state;
@@ -575,6 +576,8 @@ void ApplyTheme(float dpiScale) {
     style.GrabRounding = 3.0f;
     // タブはフレームと同じ丸み。丸まるのは上の 2 つの角だけなので、帯の上に板が並ぶ見え方は保てる。
     style.TabRounding = 4.0f;
+    // 選択中のタブの上辺に線を引かない（立体っぽく見えるので。ユーザー指定 2026-11-24）。板の明度だけで示す。
+    style.TabBarOverlineSize = 0.0f;
     style.ScrollbarRounding = 6.0f;
 
     style.WindowBorderSize = 1.0f;
@@ -646,10 +649,10 @@ void ApplyTheme(float dpiScale) {
     colors[ImGuiCol_Tab] = kTab;
     colors[ImGuiCol_TabHovered] = kTabHovered;
     colors[ImGuiCol_TabSelected] = kTabSelected;
-    colors[ImGuiCol_TabSelectedOverline] = kTabOverline;
+    colors[ImGuiCol_TabSelectedOverline] = kTabSelected; // 上辺の線は引かない（TabBarOverlineSize = 0）
     colors[ImGuiCol_TabDimmed] = kTab;
     colors[ImGuiCol_TabDimmedSelected] = kTabSelected;
-    colors[ImGuiCol_TabDimmedSelectedOverline] = kTabOverline;
+    colors[ImGuiCol_TabDimmedSelectedOverline] = kTabSelected;
 
     colors[ImGuiCol_DockingPreview] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.35f);
     colors[ImGuiCol_DockingEmptyBg] = kWindowBg;
@@ -673,34 +676,158 @@ void ApplyTheme(float dpiScale) {
     // 余白と枠は最後にまとめて DPI へ合わせる。色はスケールの影響を受けない。
     // 既定値から作り直しているので、100% へ戻す方向でも常に掛けてよい。
     style.ScaleAllSizes(g_dpiScale);
+    // 区画の境界・タブの帯の下の線・ウィンドウの枠は、拡大率によらず 1 px（ユーザー指定 2026-11-24）。
+    // ドックの区画の間（DockingSeparatorSize）は既定 2 で、拡大率でさらに太るので、ここで戻す。
+    style.DockingSeparatorSize = 1.0f;
+    style.TabBarBorderSize = 1.0f;
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
 }
 
+namespace {
+
+// タブの帯の下の線を枠線の色で描き重ねる。ImGui はこの線を選択中のタブの色（TabSelected）で
+// 描き、色だけを変える設定が無いので、同じ位置（帯の下端から TabBarBorderSize）に上から描く。
+void DrawTabBarBorderLine(ImDrawList* drawList, const ImGuiTabBar& tabBar) {
+    const float thickness = ImGui::GetStyle().TabBarBorderSize;
+    if (thickness <= 0.0f) return;
+    const float y = tabBar.BarRect.Max.y;
+    const ImVec2 min(tabBar.SeparatorMinX, y - thickness), max(tabBar.SeparatorMaxX, y);
+    drawList->PushClipRect(min, max, false);
+    drawList->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_Border));
+    drawList->PopClipRect();
+}
+
+}  // namespace
+
+void DrawCurrentTabBarBorder() {
+    if (const ImGuiTabBar* tabBar = GImGui->CurrentTabBar) {
+        DrawTabBarBorderLine(ImGui::GetWindowDrawList(), *tabBar);
+    }
+}
+
+void DrawDockTabBarBorders() {
+    ImGuiContext& g = *GImGui;
+    for (const ImGuiStoragePair& pair : g.DockContext.Nodes.Data) {
+        const auto* node = static_cast<const ImGuiDockNode*>(pair.val_p);
+        if (node == nullptr || node->TabBar == nullptr || node->HostWindow == nullptr) continue;
+        // このフレームに描かれた帯だけ（タブを隠したノードや畳んだ窓は描かない）。
+        if (node->TabBar->CurrFrameVisible != g.FrameCount) continue;
+        DrawTabBarBorderLine(node->HostWindow->DrawList, *node->TabBar);
+    }
+}
+
+namespace {
+
+// 描いている途中のプロパティの表。PropertyLabel が項目名の幅を測って一番長いものを残し、
+// EndPropertyTable でウィンドウの StateStorage へ書く。次のフレームの BeginPropertyTable が
+// それを項目名の列の幅に使う（表の幅は描く前に決めるので、測れるのは前のフレームの値）。
+struct PropertyTableState {
+    ImGuiID key = 0;
+    float widestLabel = 0.0f;
+    float offset = 0.0f;      // 表の左端（ウィンドウの中での X。見出しの下の字下げを含む）
+    float maxAligned = 0.0f;  // 揃える幅の上限
+};
+std::vector<PropertyTableState> g_propertyTables;
+
+// ウィンドウ全体で値の欄が始まる位置（表の左端 + 一番長い項目名、ウィンドウの中での X）。
+// 字下げの違う表（見出しの上と下）でも値の欄の左端が揃うよう、幅ではなく位置で持つ。
+// 今のフレームで集めている値と、前のフレームで集め終えた値を持つ。
+const ImGuiID kWindowLabelFrameKey = ImHashStr("##sgPropertyLabelFrame");
+const ImGuiID kWindowLabelGatherKey = ImHashStr("##sgPropertyLabelGather");
+const ImGuiID kWindowLabelLastKey = ImHashStr("##sgPropertyLabelLast");
+// 揃える幅の上限（ウィンドウの中身の幅に対する割合）。狭い窓で値の欄が潰れないように。
+constexpr float kLabelColumnMaxRatio = 0.4f;
+
+}  // namespace
+
+// **項目名の列は、ウィンドウ全体で一番長い項目名に揃える**（ユーザー指定 2026-11-24
+// 「項目とパラメータが重ならないように。一番長い項目の長さに他をそろえる」。最初は節ごとに
+// 揃えたが、値の欄の左端が節ごとにずれるので、ウィンドウ全体に変えた）。
+// ただし揃える幅はウィンドウの中身の幅の 4 割まで。それより長い項目名がある表（節）だけは、
+// その表の中で項目名の幅まで広げる（重ならないことを優先）。
+// 幅は前のフレームに測った値を使うので、項目名が変わった最初の 1 フレームだけは前の幅で描く。
 bool BeginPropertyTable(const char* id, const char* widestLabel) {
+    ImGuiStorage& storage = ImGui::GetCurrentWindow()->StateStorage;
+    // フレームが変わって最初の表で、前のフレームに集めたウィンドウ全体の値を確定させる。
+    const int frame = ImGui::GetFrameCount();
+    if (storage.GetInt(kWindowLabelFrameKey, -1) != frame) {
+        storage.SetFloat(kWindowLabelLastKey, storage.GetFloat(kWindowLabelGatherKey, 0.0f));
+        storage.SetFloat(kWindowLabelGatherKey, 0.0f);
+        storage.SetInt(kWindowLabelFrameKey, frame);
+    }
+    const ImGuiID key = ImGui::GetID(id) ^ ImHashStr("##sgPropertyLabelWidth");
+    const float maxAligned = ImGui::GetContentRegionAvail().x * kLabelColumnMaxRatio;
+    const float offset = ImGui::GetCursorPosX();
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp)) {
         return false;
     }
     // ラベル列は文字が入る幅なので、文字サイズにも追従させる（大きくして切れないように）。
     const float baseWidth = TextScaled(CurrentLanguage() == Language::English ? kLabelColumnWidthEnglish
                                                                               : kLabelColumnWidth);
-    const float labelWidth = widestLabel ? std::max(baseWidth,
-        ImGui::CalcTextSize(widestLabel).x + ImGui::CalcTextSize("：").x) : baseWidth;
+    const float hintWidth =
+        widestLabel ? ImGui::CalcTextSize(widestLabel).x + ImGui::CalcTextSize("：").x : 0.0f;
+    // この表に要る幅（呼び出し側の指定と、前のフレームに測った値）と、ウィンドウで揃える幅（上限つき）。
+    const float tableWidth = std::max(hintWidth, storage.GetFloat(key, 0.0f));
+    const float windowWidth = std::min(storage.GetFloat(kWindowLabelLastKey, 0.0f) - offset, maxAligned);
+    const float labelWidth = std::max({baseWidth, tableWidth, windowWidth});
     ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
     ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+    g_propertyTables.push_back({key, hintWidth, offset, maxAligned});
     return true;
 }
 
 void EndPropertyTable() {
+    if (!g_propertyTables.empty()) {
+        const PropertyTableState state = g_propertyTables.back();
+        g_propertyTables.pop_back();
+        // 表の中の窓（ImGui::GetCurrentWindow）は BeginTable と同じ窓。EndTable の前に書く。
+        ImGuiStorage& storage = ImGui::GetCurrentWindow()->StateStorage;
+        storage.SetFloat(state.key, state.widestLabel);
+        // 上限を超える表は揃える対象に入れない（その表だけで広げる）。入れると他の表まで上限まで広がる。
+        if (state.widestLabel <= state.maxAligned) {
+            storage.SetFloat(kWindowLabelGatherKey,
+                             std::max(storage.GetFloat(kWindowLabelGatherKey, 0.0f), state.offset + state.widestLabel));
+        }
+    }
     ImGui::EndTable();
 }
 
+// 項目の見出しは**幅いっぱいの帯**に文字を置く（ユーザー指定 2026-11-24「帯のスタイルにしたい」）。
+// 見た目だけで、畳む機能は持たない（三角も付けない）。
+//
+// **見出しの下の要素は一段右へ字下げする**（ユーザー指定 2026-11-24「項目の下にある要素の
+// パラメータ類は右へ段落的なオフセット」）。見出しを描いた後に Indent し、同じウィンドウの
+// 次の見出しでは先に戻してから帯を描く（帯は常に字下げなしの幅いっぱい）。字下げしたかどうかは
+// ウィンドウの StateStorage にフレーム番号で覚える。ImGui は Begin のたびに字下げを 0 に戻すので、
+// 最後の見出しの後の字下げを戻す必要は無い。
 void SectionHeader(const char* label) {
-    ImGui::SeparatorText(label);
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    static const ImGuiID kIndentKey = ImHashStr("##sgSectionIndentFrame");
+    const float indent = Scaled(16.0f);
+    if (window->StateStorage.GetInt(kIndentKey, -1) == ImGui::GetFrameCount()) {
+        ImGui::Unindent(indent);
+    }
+    const char* labelEnd = ImGui::FindRenderedTextEnd(label);
+    const float lineHeight = ImGui::GetTextLineHeight();
+    const float height = lineHeight + Scaled(12.0f);
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const float width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+    const ImVec2 max(min.x + width, min.y + height);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(min, max, ImGui::GetColorU32(kSectionBand));
+    drawList->AddText(ImVec2(min.x + Scaled(8.0f), min.y + (height - lineHeight) * 0.5f),
+                      ImGui::GetColorU32(ImGuiCol_Text), label, labelEnd);
+    ImGui::Dummy(ImVec2(width, height));
+    ImGui::Indent(indent);
+    window->StateStorage.SetInt(kIndentKey, ImGui::GetFrameCount());
 }
 
 namespace {
 
-// 「?」の印を size 角で描く。coverLine が真なら、下を通る線（見出しの罫線）を地の色で隠す。
-void DrawHelpMarker(const char* help, float size, bool coverLine) {
+// 「?」の印を size 角で描く。
+void DrawHelpMarker(const char* help, float size) {
     ImGui::PushID(help);
     const ImVec2 min = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##help", ImVec2(size, size));
@@ -708,9 +835,6 @@ void DrawHelpMarker(const char* help, float size, bool coverLine) {
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const ImVec2 center(min.x + size * 0.5f, min.y + size * 0.5f);
     const float radius = size * 0.42f;
-    if (coverLine) {
-        draw->AddCircleFilled(center, radius + Scaled(2.0f), ImGui::GetColorU32(ImGuiCol_WindowBg));
-    }
     const ImU32 color = ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
     draw->AddCircle(center, radius, color, 0, Scaled(1.0f));
     // 「?」は ASCII の字形なので、どのフォントでも出る。
@@ -725,20 +849,20 @@ void DrawHelpMarker(const char* help, float size, bool coverLine) {
 }  // namespace
 
 void SectionHeader(const char* label, const char* help) {
-    ImGui::SeparatorText(label);
+    SectionHeader(label);
     if (help == nullptr || help[0] == '\0') {
         return;
     }
-    // 見出しの文字のすぐ右に印を重ねる（行は増やさない）。SeparatorText は左寄せ
-    // （SeparatorTextAlign.x = 0）なので、文字は左端から SeparatorTextPadding.x の所に出る。
+    // 帯の文字のすぐ右に印を重ねる（行は増やさない）。文字は帯の左端から 8 の所に出る。
+    // 帯には罫線が無いので、印の下を地の色で隠さない。
     const ImVec2 after = ImGui::GetCursorScreenPos();
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
-    const ImGuiStyle& style = ImGui::GetStyle();
     const float size = ImGui::GetTextLineHeight();
-    const float x = min.x + style.SeparatorTextPadding.x + ImGui::CalcTextSize(label).x + style.ItemInnerSpacing.x;
+    const float labelWidth = ImGui::CalcTextSize(label, nullptr, true).x;
+    const float x = min.x + Scaled(8.0f) + labelWidth + ImGui::GetStyle().ItemInnerSpacing.x;
     ImGui::SetCursorScreenPos(ImVec2(x, min.y + (max.y - min.y - size) * 0.5f));
-    DrawHelpMarker(help, size, true);
+    DrawHelpMarker(help, size);
     ImGui::SetCursorScreenPos(after);
 }
 
@@ -748,6 +872,11 @@ void PropertyLabel(const char* label, const char* tooltip) {
     ImGui::AlignTextToFramePadding();
     // 「パラメータ名：値」と読めるよう、ラベルの末尾にコロンを付ける。
     ImGui::Text("%s：", label);
+    // 表の項目名の列をこの幅まで広げる（次のフレームから。BeginPropertyTable を参照）。
+    if (!g_propertyTables.empty()) {
+        float& widest = g_propertyTables.back().widestLabel;
+        widest = std::max(widest, ImGui::GetItemRectSize().x);
+    }
     DrawTooltip(tooltip);
     ImGui::TableSetColumnIndex(1);
     ImGui::PushID(label);
@@ -1238,7 +1367,7 @@ bool VerticalSplitter(const char* id, float* width, float minWidth, float maxWid
     const auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     const float center = (min.x + max.x) * 0.5f;
     const auto color = ImGui::GetColorU32(active ? ImGuiCol_SeparatorActive :
-                                        hovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator);
+                                        hovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Border);  // 区画の境界は枠線の色
     ImGui::GetWindowDrawList()->AddLine(ImVec2(center, min.y), ImVec2(center, max.y), color, Scaled(1.0f));
     return released;
 }
@@ -1286,7 +1415,7 @@ bool FlushSplitter(const char* id, bool vertical, float* size, float minSize, fl
     }
     const ImVec2 min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
     const ImU32 color = ImGui::GetColorU32(active ? ImGuiCol_SeparatorActive :
-                                           hovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator);
+                                           hovered ? ImGuiCol_SeparatorHovered : ImGuiCol_Border);  // 区画の境界は枠線の色
     const float thickness = Scaled(1.0f);
     if (vertical) ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, min.y), ImVec2(min.x, max.y), color, thickness);
     else ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, min.y), ImVec2(max.x, min.y), color, thickness);
@@ -1329,7 +1458,7 @@ bool HorizontalSplitter(const char* id, float* height, float minHeight, float ma
     const float centerY = (min.y + max.y) * 0.5f;
     const ImU32 color = ImGui::GetColorU32(active      ? ImGuiCol_SeparatorActive
                                            : hovered   ? ImGuiCol_SeparatorHovered
-                                                       : ImGuiCol_Separator);
+                                                       : ImGuiCol_Border);  // 区画の境界は枠線の色
     ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, centerY), ImVec2(max.x, centerY), color,
                                         Scaled(1.0f));
 
@@ -1390,7 +1519,7 @@ void HelpMarker(const char* help) {
     if (cursor.y >= previousMin.y && cursor.y <= previousMax.y) {
         ImGui::SetCursorScreenPos(ImVec2(cursor.x, previousMin.y + (previousMax.y - previousMin.y - size) * 0.5f));
     }
-    DrawHelpMarker(help, size, false);
+    DrawHelpMarker(help, size);
 }
 
 void HintText(const char* format, ...) {

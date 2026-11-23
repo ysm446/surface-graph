@@ -33,6 +33,9 @@ struct StartupOptions {
     std::string language;                    // --language ja|en
     bool gpuValidation = false;
     float uiScale = 0.0f;                    // --ui-scale <倍率>（スクリーンショットの確認用。0 で設定に従う）
+    bool viewGrid = false;                   // --view-grid（スクリーンショットの確認用。2D ビューに UV グリッドを出す）
+    bool uvChecker = false;                  // --uv-checker（スクリーンショットの確認用。3D ビューに UV チェッカーを貼る）
+    bool showSettings = false;               // --show-settings（スクリーンショットの確認用。設定のウィンドウを開く）
     bool arrange = false;                    // --arrange（スクリーンショットの確認用。開いたグラフを整列する）
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane（スクリーンショットの確認用）
@@ -103,7 +106,8 @@ private:
     void ApplyUiScale();
     void LoadSettings();
     void SaveSettings() const;
-    void DrawScaleMenu();
+    // 「ウィンドウ > 設定」で開く浮いたウィンドウ（terrain-graph と同じ）。言語・拡大率・文字サイズ。
+    void DrawSettingsWindow();
 
     // 3D ビューに重ねるライトのギズモ（terrain-graph と同じ絵）。
     void DrawPreviewLightGizmo(const ImVec2& areaMin, const ImVec2& areaMax);
@@ -155,6 +159,11 @@ private:
     std::vector<std::filesystem::path> m_recentFiles;
     bool m_followSystemScale = false;
     float m_manualScale = 1.0f;
+    int m_fontSize = static_cast<int>(ui::kDefaultFontSize);  // 文字の大きさ（px）。拡大率とは別に掛かる
+    int m_fontSizeEdit = static_cast<int>(ui::kDefaultFontSize);  // スライダーで動かしている途中の値
+    bool m_fontSizeEditing = false;                               // 文字サイズのスライダーを掴んでいる
+    bool m_englishUi = false;                                 // 設定に保存する言語
+    bool m_showSettings = false;
 
     // 評価。スライダーを掴んでいる間は低解像度で評価し、離したらフル解像度で評価し直す。
     bool m_interactive = false;
@@ -185,6 +194,7 @@ private:
     uint64_t m_pressedPin = 0;
     ImVec2 m_pressedPinPos = {0.0f, 0.0f};
     bool m_viewTile = false;
+    bool m_viewGrid = false;  // UV のグリッドと座標の数字を重ねる
     int m_viewChannel = 0;  // 0 RGB / 1 R / 2 G / 3 B / 4 A
     float m_viewZoom = 1.0f;
     ImVec2 m_viewPan = {0.0f, 0.0f};

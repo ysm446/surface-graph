@@ -84,8 +84,9 @@ void DrawGraphDots(const ImVec2& screenMin, const ImVec2& screenMax) {
     const ImVec2 canvasMin = ed::ScreenToCanvas(screenMin);
     const ImVec2 canvasMax = ed::ScreenToCanvas(screenMax);
     constexpr float kBaseSpacing = 24.0f;
-    const ImU32 backgroundColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.112f, 0.112f, 0.112f, 1.0f));
-    const ImU32 dotColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.26f, 0.26f, 0.26f, 0.46f));
+    // 背景 #242424。点は背景よりわずかに明るい #2B2B2B。彩度は持たせない（terrain-graph に合わせた）。
+    const ImU32 backgroundColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.141f, 0.141f, 0.141f, 1.0f));
+    const ImU32 dotColor = ImGui::ColorConvertFloat4ToU32(ImVec4(0.169f, 0.169f, 0.169f, 1.0f));
 
     ed::Suspend();
     drawList->PushClipRect(screenMin, screenMax, true);
@@ -205,26 +206,43 @@ void Application::DrawGraphNode(const graph::Node& node) {
     const bool hasError = (result != nullptr && !result->error.empty());
     const bool viewed = (node.id == m_viewNode);
     const float thumbnail = ui::Scaled(ui::kNodeThumbnail);
-    const float width = std::max(thumbnail, ui::TextScaled(150.0f));
-    const ImVec4 nodeBg = {0.15f, 0.15f, 0.15f, 0.98f};
+    // 地は背景より暗い #1A1A1A（彩度なし）。既定の枠は地と同じ色にして見せない（terrain-graph に合わせた）。
+    const ImVec4 nodeBg = {0.102f, 0.102f, 0.102f, 0.98f};
+    const ImVec4 nodeBorder = {0.102f, 0.102f, 0.102f, 1.0f};
+    // 余白は上下左右とも同じ幅。名前・ピン・ラベル・サムネイルはすべてその内側に収める。
+    // ピンの丸は縁から余白の幅ぶん内側（中身の端）に置き、リンクの端はノードの縁で止める。
+    // ラベルは丸の中心から kPinLabelOffset 離して置く。
+    constexpr float kNodePadding = 14.0f;
+    constexpr float kPinLabelOffset = 12.0f;
+    // 中身の幅。サムネイル・最小幅・ピンの行（入力と出力のラベルが重ならない幅）のうち一番広いもの。
+    float width = std::max(thumbnail, ui::TextScaled(150.0f));
+    for (size_t row = 0; row < std::max(def.inputs.size(), def.outputs.size()); ++row) {
+        float rowWidth = 0.0f;
+        if (row < def.inputs.size()) rowWidth += kPinLabelOffset + ImGui::CalcTextSize(def.inputs[row].label.english).x;
+        if (row < def.outputs.size() && !def.hideOutputs) {
+            rowWidth += ImGui::CalcTextSize(def.outputs[row].label.english).x + kPinLabelOffset + 12.0f;
+        }
+        width = std::max(width, rowWidth);
+    }
 
-    ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(12.0f, 10.0f, 12.0f, 10.0f));
+    ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(kNodePadding, kNodePadding, kNodePadding, kNodePadding));
     ed::PushStyleVar(ed::StyleVar_NodeRounding, 6.0f);
     ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, (hasError || viewed) ? 2.0f : 1.0f);
     ed::PushStyleVar(ed::StyleVar_SelectedNodeBorderWidth, 1.8f);
     ed::PushStyleColor(ed::StyleColor_NodeBg, nodeBg);
     ed::PushStyleColor(ed::StyleColor_NodeBorder,
                        hasError ? ImGui::ColorConvertU32ToFloat4(ui::ErrorColor())
-                                : viewed ? ImVec4(0.45f, 0.78f, 0.95f, 1.0f) : ImVec4(0.22f, 0.22f, 0.22f, 1.0f));
+                                : viewed ? ImVec4(0.45f, 0.78f, 0.95f, 1.0f) : nodeBorder);
 
     ed::BeginNode(ed::NodeId(node.id));
     ImGui::PushID(static_cast<int>(node.id));
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const float rowStartX = ImGui::GetCursorPosX();
-    // ピンの丸はノードの縁に置く（半分が外へ出る）。右の縁は前のフレームの大きさから求める。
-    const float nodeLeftX = ed::GetNodePosition(ed::NodeId(node.id)).x;
-    const float nodeSizeX = ed::GetNodeSize(ed::NodeId(node.id)).x;
-    const float nodeRightX = nodeLeftX + ((nodeSizeX > 0.0f) ? nodeSizeX : width + 24.0f);
+    // 中身の左右の端（ピンの丸を置く所）と、ノードの左右の縁（リンクの端）。
+    const float contentLeftX = ImGui::GetCursorScreenPos().x;
+    const float contentRightX = contentLeftX + width;
+    const float nodeLeftX = contentLeftX - kNodePadding;
+    const float nodeRightX = contentRightX + kNodePadding;
 
     // 見出し: カテゴリの色の印と名前。
     {
@@ -265,40 +283,33 @@ void Application::DrawGraphNode(const graph::Node& node) {
                 type = (link != nullptr) ? m_graph.ResolveOutputType(link->fromNode, link->fromPin) : graph::PinType::Gray;
             }
             ed::BeginPin(ed::PinId(MakePinId(node.id, false, index)), ed::PinKind::Input);
-            const ImVec2 min = ImGui::GetCursorScreenPos();
-            ImGui::Dummy({8.0f, rowHeight});
-            const ImVec2 center = {nodeLeftX, rowScreenY + rowHeight * 0.5f};
-            ed::PinPivotRect(center, center);
+            const ImVec2 center = {contentLeftX, rowScreenY + rowHeight * 0.5f};
+            // リンクの端は縁の上の 1 点。縁と丸の間には何も描かない。
+            const ImVec2 pivot = {nodeLeftX, center.y};
+            ed::PinPivotRect(pivot, pivot);
             drawCircle(center, PinTypeColor(type), link != nullptr);
-            ImGui::SameLine(0.0f, 2.0f);
-            ImGui::SetCursorPosY(rowY + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f);
+            ImGui::SetCursorPos({rowStartX + kPinLabelOffset, rowY + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f});
             ImGui::TextColored(labelColor, "%s", def.inputs[row].label.english);
-            // ラベルも掴める範囲に含める。縁の丸まで届くよう左へ広げる。
-            ed::PinRect({nodeLeftX - radius * 2.0f, min.y}, {ImGui::GetItemRectMax().x, min.y + rowHeight});
+            // 縁から丸を経てラベルの右端までを掴める範囲にする。
+            ed::PinRect({nodeLeftX - radius, rowScreenY}, {ImGui::GetItemRectMax().x, rowScreenY + rowHeight});
             ed::EndPin();
-        } else {
-            ImGui::Dummy({8.0f, rowHeight});
         }
         if (row < def.outputs.size() && !def.hideOutputs) {
             const int index = static_cast<int>(row);
             const graph::PinType type = m_graph.ResolveOutputType(node.id, index);
             const char* label = def.outputs[row].label.english;
             const float labelWidth = ImGui::CalcTextSize(label).x;
-            ImGui::SameLine();
-            ImGui::SetCursorPosX(rowStartX + width - labelWidth - 10.0f);
-            ImGui::SetCursorPosY(rowY);
+            ImGui::SetCursorPos({rowStartX + width - kPinLabelOffset - labelWidth,
+                                 rowY + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f});
             ed::BeginPin(ed::PinId(MakePinId(node.id, true, index)), ed::PinKind::Output);
-            const ImVec2 min = ImGui::GetCursorScreenPos();
-            ImGui::SetCursorPosY(rowY + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f);
             ImGui::TextColored(labelColor, "%s", label);
-            ImGui::SameLine(0.0f, 2.0f);
-            ImGui::SetCursorPosY(rowY);
-            ImGui::Dummy({8.0f, rowHeight});
-            const ImVec2 center = {nodeRightX, rowScreenY + rowHeight * 0.5f};
-            ed::PinPivotRect(center, center);
+            const float labelMinX = ImGui::GetItemRectMin().x;
+            const ImVec2 center = {contentRightX, rowScreenY + rowHeight * 0.5f};
+            const ImVec2 pivot = {nodeRightX, center.y};
+            ed::PinPivotRect(pivot, pivot);
             // **どの出力を 2D ビューに出しているか**を丸の塗りで示す（terrain-graph と同じ）。
             drawCircle(center, PinTypeColor(type), viewed && index == m_viewOutput);
-            ed::PinRect({min.x, min.y}, {nodeRightX + radius * 2.0f, min.y + rowHeight});
+            ed::PinRect({labelMinX, rowScreenY}, {nodeRightX + radius, rowScreenY + rowHeight});
             ed::EndPin();
         }
         ImGui::SetCursorPosY(rowY + rowHeight);
@@ -631,7 +642,12 @@ void Application::DrawGraphPanel() {
     if (canvasHovered && !textInput && !io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) ed::NavigateToContent();
     if (m_navigateCountdown > 0 && --m_navigateCountdown == 0) ed::NavigateToContent(0.0f);
 
+    // ed::End はキャンバスの周りに枠線（ImGuiCol_Border）を引く。上の辺がタブの帯の下の線と重なって
+    // 境界が 2 px に見えるので、枠線は消す（境界の線は 1 px。ユーザー指定 2026-11-24）。
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_BorderShadow, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
     ed::End();
+    ImGui::PopStyleColor(2);
     ed::PopStyleColor(4);
 
     // エディタ → モデル。ノードの移動はアンドゥの対象にしないので、起点（m_committed）にも同じ位置を写す。
@@ -659,10 +675,12 @@ void Application::DrawGraphPanel() {
         ImGui::SetCursorScreenPos({canvasScreenMin.x + canvasScreenSize.x - size - margin, canvasScreenMin.y + margin});
         if (ImGui::BeginChild("graphTools", ImVec2(size, size), ImGuiChildFlags_None,
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground)) {
-            if (ui::ArrangeIconButton("arrange", size,
-                                      ui::Tr("グラフを整列（左から右へ列に並べる）", "Arrange graph (columns, left to right)"))) {
-                m_arrangeCountdown = 1;
-            }
+            // キャンバスに重ねるボタンは、地をメニューバーと同じ暗さにする（terrain-graph のビューポートのボタンと同じ）。
+            ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
+            const bool arrangeClicked = ui::ArrangeIconButton("arrange", size,
+                                      ui::Tr("グラフを整列（左から右へ列に並べる）", "Arrange graph (columns, left to right)"));
+            ImGui::PopStyleColor();
+            if (arrangeClicked) m_arrangeCountdown = 1;
         }
         ImGui::EndChild();
     }

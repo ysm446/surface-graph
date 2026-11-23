@@ -92,6 +92,8 @@ target_compile_definitions(sg_common_options INTERFACE
     SG_APP_VERSION="${PROJECT_VERSION}"
     # シェーダはホットリロードのためソースツリーを直接参照する。
     SG_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+    # 確認用の画像（3D ビューの UV チェッカーなど）。シェーダと同じくソースツリーを直接参照する。
+    SG_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/assets"
     # 手元のデータ置き場（スクリーンショットや CLI の出力の既定の保存先）。.gitignore で外してある。
     SG_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
     $<$<CONFIG:Debug>:SG_DEBUG=1>
