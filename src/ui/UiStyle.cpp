@@ -578,6 +578,9 @@ void ApplyTheme(float dpiScale) {
     style.TabRounding = 4.0f;
     // 選択中のタブの上辺に線を引かない（立体っぽく見えるので。ユーザー指定 2026-11-24）。板の明度だけで示す。
     style.TabBarOverlineSize = 0.0f;
+    // ドックのタブの左にある ImGui 既定のウィンドウメニューの ▼ は出さない（ユーザー指定 2026-11-24）。
+    // 中身はタブを閉じる・タブの帯を隠すだけで、このアプリでは使わない。
+    style.WindowMenuButtonPosition = ImGuiDir_None;
     style.ScrollbarRounding = 6.0f;
 
     style.WindowBorderSize = 1.0f;
