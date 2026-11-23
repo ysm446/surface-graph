@@ -283,6 +283,11 @@ ParamLayout BuildParamLayout(const NodeDef& def) {
             offset += 16 * kMaxGradientStops + 32 + 4;
             continue;
         }
+        if (param.type == ParamType::File) {
+            // 定数バッファには入らない。番号を揃えるためにオフセットだけ積む。
+            layout.offset.push_back(offset);
+            continue;
+        }
         const Field field = FieldOf(param.type);
         if ((offset % 16) + field.size > 16) offset = Align16(offset);
         layout.offset.push_back(offset);
@@ -304,6 +309,7 @@ void PackParams(const NodeDef& def, const ParamLayout& layout, const std::vector
             case ParamType::Float:  std::memcpy(dst, value.f, 4); break;
             case ParamType::Float2: std::memcpy(dst, value.f, 8); break;
             case ParamType::Color:  std::memcpy(dst, value.f, 16); break;
+            case ParamType::File: break;
             case ParamType::Gradient: {
                 const int count = std::min<int>(static_cast<int>(value.gradient.size()), kMaxGradientStops);
                 float positions[kMaxGradientStops] = {};

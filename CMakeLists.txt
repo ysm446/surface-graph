@@ -105,6 +105,8 @@ target_include_directories(sg_common_options INTERFACE
 add_library(sg_graph STATIC
     src/graph/Graph.cpp
     src/graph/Graph.h
+    src/graph/GraphLayout.cpp
+    src/graph/GraphLayout.h
     src/graph/NodeDefinitions.cpp
     src/io/GraphJson.cpp
     src/io/GraphJson.h
@@ -117,6 +119,8 @@ target_link_libraries(sg_graph PUBLIC sg_common_options nlohmann_json::nlohmann_
 add_library(sg_engine STATIC
     src/engine/Evaluator.cpp
     src/engine/Evaluator.h
+    src/engine/Export.cpp
+    src/engine/Export.h
     src/engine/MaterialPreview.cpp
     src/engine/MaterialPreview.h
     src/core/ImageIo.cpp

@@ -238,6 +238,10 @@ bool WireframeToggle(const char* id, bool* value, float size);
 // 押したら true。ホバーで色が持ち上がり、tooltip があれば出す。
 bool SaveIconButton(const char* id, float size, const char* tooltip);
 
+// グラフの整列のボタン。左に 1 個、右に 2 個の箱を線で繋いだ図形で描く（字形ではなく図形）。
+// キャンバスの上に重ねて置くので、下地の板を付ける。押したら true。
+bool ArrangeIconButton(const char* id, float size, const char* tooltip);
+
 // 通知の意味色。ステータスバーで警告とエラーを区別するためだけに使う。
 // グレー基調を崩さないよう彩度は低く抑えてある。配色の一部なので UiStyle.cpp に置く。
 ImU32 WarnColor();

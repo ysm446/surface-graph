@@ -1,7 +1,7 @@
 # cli — surfgraph-cli の使い方
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-23 03:59
+更新日時: 2026-11-23 05:30
 
 `surfgraph-cli` は、UI なしでグラフを評価するヘッドレス CLI。評価エンジンはエディタと同じもの。
 ビルドすると `build/bin/<構成>/surfgraph-cli.exe` にできる。シェーダはソースツリーの `shaders/` を直接読む。
@@ -47,6 +47,17 @@ surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]
 - `<dir>/<render と同じ名前>.png` と比べ、PSNR が 45 dB 未満か最大誤差が 8/255 を超えたら失敗。
 - `--update` を付けると、比べずに基準画像を書き直す。
 - 基準画像は `graphs/tests/golden/<グラフ名>/` に置く（解像度は 256）。
+
+## export — マテリアルを書き出す
+
+```
+surfgraph-cli export <graph> --out <dir> [--name NAME] [--res N] [--orm] [--no-alpha]
+```
+
+- Material Output に繋いだマップを `<dir>/<名前>_<マップ名>.png`（Displacement は `.exr`）に書く。
+- `--name` を省くとグラフの名前。`--orm` で ORM の 1 枚も書き、`--no-alpha` で Albedo のアルファに
+  Opacity を入れない。
+- 仕様は [export.md](export.md)。
 
 ## nodes — ノードの一覧
 

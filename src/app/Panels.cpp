@@ -1,5 +1,7 @@
 #include "app/Application.h"
 
+#include "core/FileDialog.h"
+#include "core/PathUtf8.h"
 #include "ui/Localization.h"
 #include "ui/UiStyle.h"
 
@@ -142,9 +144,46 @@ bool Application::DrawParamRow(graph::Node& node, int paramIndex, const char* la
         case graph::ParamType::Gradient:
             changed = DrawGradientRows(def, value);
             break;
+        case graph::ParamType::File: {
+            // ファイル名と、選び直すボタン。フルパスはツールチップに出す。
+            ui::PropertyLabel(label, tooltip);
+            const std::filesystem::path current(std::u8string(value.text.begin(), value.text.end()));
+            const std::string name = value.text.empty() ? std::string(ui::Tr("（なし）", "(none)"))
+                                                        : ToUtf8Display(current.filename());
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(name.c_str());
+            if (!value.text.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", value.text.c_str());
+            ui::PropertyEnd();
+            ui::PropertyLabelEmpty("##fileButtons");
+            if (ui::Button(ui::Tr("開く...", "Open..."))) {
+                const std::filesystem::path picked =
+                    ShowOpenFileDialog(ui::Tr(L"画像を開く", L"Open Image"), ImageFileFilters());
+                if (!picked.empty()) {
+                    // グラフを保存したフォルダの中にあれば、相対パスで覚える（フォルダごと移しても切れない）。
+                    std::filesystem::path stored = picked;
+                    if (!m_documentPath.empty()) {
+                        std::error_code ec;
+                        const std::filesystem::path relative = std::filesystem::relative(picked, m_documentPath.parent_path(), ec);
+                        if (!ec && !relative.empty() && *relative.begin() != "..") stored = relative;
+                    }
+                    const std::u8string text = stored.generic_u8string();
+                    value.text.assign(text.begin(), text.end());
+                    changed = true;
+                }
+            }
+            if (!value.text.empty()) {
+                ImGui::SameLine();
+                if (ui::Button(ui::Tr("外す", "Clear"))) {
+                    value.text.clear();
+                    changed = true;
+                }
+            }
+            ui::PropertyEnd();
+            break;
+        }
     }
     // 行の右クリックで「グラフ入力として公開」。
-    if (labelOverride == nullptr && def.type != graph::ParamType::Gradient &&
+    if (labelOverride == nullptr && def.type != graph::ParamType::Gradient && def.type != graph::ParamType::File &&
         ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         m_paramMenuNode = node.id;
         m_paramMenuIndex = paramIndex;

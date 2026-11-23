@@ -91,6 +91,15 @@ ParamDef Gradient(const char* name, L label) {
     return def;
 }
 
+ParamDef File(const char* name, L label, L tooltip = {"", ""}) {
+    ParamDef def;
+    def.name = name;
+    def.label = label;
+    def.type = ParamType::File;
+    def.tooltip = tooltip;
+    return def;
+}
+
 const L kScaleTip = {"タイルの数。整数なので、どの値でも繋ぎ目が出ない。",
                      "Number of tiles. Always an integer, so the result stays seamless."};
 
@@ -127,6 +136,9 @@ std::vector<NodeDef> BuildDefs() {
             Float("gain", {"ゲイン", "Gain"}, 0.5f, 0.0f, 1.0f,
                   {"細かい段ほど弱める割合。", "How much each finer layer is attenuated."}),
             Enum("mode", {"種類", "Type"}, 0, {{"FBM", "FBM"}, {"Ridged", "Ridged"}, {"Billow", "Billow"}}),
+            Int("scaleY", {"スケール Y", "Scale Y"}, 0, 0, 64,
+                {"縦のタイルの数。0 なら「スケール」と同じ。違う値にすると、横か縦に伸びた模様になる。",
+                 "Vertical tile count. 0 uses Scale. A different value stretches the pattern horizontally or vertically."}),
         };
         def.usesSeed = true;
         def.tooltip = {"周期付きの勾配ノイズを重ねた FBM。", "Tileable fractal gradient noise."};
@@ -147,6 +159,9 @@ std::vector<NodeDef> BuildDefs() {
                   "F1 is the distance to the nearest point, F2 - F1 the cell borders, Cells a random value per cell."}),
             Float("jitter", {"ばらつき", "Jitter"}, 1.0f, 0.0f, 1.0f,
                   {"0 で格子、1 で完全にばらつく。", "0 gives a grid, 1 fully random points."}),
+            Int("scaleY", {"スケール Y", "Scale Y"}, 0, 0, 64,
+                {"縦のタイルの数。0 なら「スケール」と同じ。違う値にすると、横か縦に伸びた模様になる。",
+                 "Vertical tile count. 0 uses Scale. A different value stretches the pattern horizontally or vertically."}),
         };
         def.usesSeed = true;
         def.tooltip = {"セル状のノイズ（Voronoi）。", "Cellular (Voronoi) noise."};
@@ -163,6 +178,9 @@ std::vector<NodeDef> BuildDefs() {
             Int("scale", {"スケール", "Scale"}, 8, 1, 64, kScaleTip),
             Int("octaves", {"オクターブ", "Octaves"}, 1, 1, 10),
             Float("gain", {"ゲイン", "Gain"}, 0.5f, 0.0f, 1.0f),
+            Int("scaleY", {"スケール Y", "Scale Y"}, 0, 0, 64,
+                {"縦のタイルの数。0 なら「スケール」と同じ。違う値にすると、横か縦に伸びた模様になる。",
+                 "Vertical tile count. 0 uses Scale. A different value stretches the pattern horizontally or vertically."}),
         };
         def.usesSeed = true;
         def.tooltip = {"格子の乱数を補間したノイズ。", "Interpolated lattice noise."};
@@ -293,6 +311,60 @@ std::vector<NodeDef> BuildDefs() {
         def.usesSeed = true;
         def.tooltip = {"形状の入力を格子に並べ、乱数で位置・回転・大きさ・輝度を揺らす。形状が繋がっていなければ矩形を使う。重なりは明るいほうを残す。",
                        "Places the pattern input on a grid with random position, rotation, scale and luminance. Uses a rectangle when nothing is connected. Overlaps keep the brighter value."};
+        defs.push_back(def);
+    }
+
+    {
+        NodeDef def;
+        def.type = "pattern.stripe";
+        def.label = {"Stripe", "Stripe"};
+        def.category = NodeCategory::Pattern;
+        def.shader = L"nodes/pattern_stripe.hlsl";
+        def.outputs = {grayOut};
+        def.params = {
+            Enum("direction", {"向き", "Direction"}, 0, {{"横", "Horizontal"}, {"縦", "Vertical"}},
+                 {"線が伸びる向き。", "Direction the lines run."}),
+            Int("count", {"本数", "Count"}, 1, 1, 64,
+                {"線の数（正方形の単位タイルあたり）。1 なら中央に 1 本。", "Number of lines per square unit tile. 1 gives a single centered line."}),
+            Float("width", {"太さ", "Width"}, 0.5f, 0.0f, 1.0f,
+                  {"線の間隔に対する太さ。1 で隙間が無くなる。", "Line width relative to the spacing. 1 leaves no gap."}),
+            Int("dashes", {"破線の数", "Dashes"}, 0, 0, 64,
+                {"線の向きに並べる破線の数（単位タイルあたり）。0 なら実線。", "Dashes along the line per unit tile. 0 gives a solid line."}),
+            Float("dashLength", {"破線の長さ", "Dash Length"}, 0.5f, 0.0f, 1.0f,
+                  {"破線の間隔に対する長さ。", "Dash length relative to the dash spacing."}),
+            Float("softness", {"ぼかし", "Softness"}, 0.0f, 0.0f, 0.5f,
+                  {"縁をなだらかにする幅（線の間隔に対する割合）。0 で硬い縁。", "Width of the soft edge, relative to the spacing. 0 gives a hard edge."}),
+        };
+        def.tooltip = {"帯と破線。本数 1 の横線は、上下の端が 0 で左右に繋がる 1 本の線になる（路面の白線など）。",
+                       "Bands and dashed lines. A single horizontal line is 0 at the top and bottom and tiles left to right (road markings)."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
+        def.type = "pattern.scatter";
+        def.label = {"Scatter", "Scatter"};
+        def.category = NodeCategory::Pattern;
+        def.shader = L"nodes/pattern_scatter.hlsl";
+        def.inputs = {{"Pattern", {"形状", "Pattern"}, PinType::Gray}, {"Mask", {"密度", "Density"}, PinType::Gray}};
+        def.outputs = {grayOut};
+        def.params = {
+            Int("density", {"密度", "Density"}, 8, 1, 64,
+                {"ばらまく細かさ（単位タイルの一辺を何マスに割るか）。", "How finely to scatter (cells per side of the unit tile)."}),
+            Int("perCell", {"マスあたりの数", "Per Cell"}, 1, 1, 4, {"1 マスに置く数。", "Instances placed in each cell."}),
+            Float("size", {"大きさ", "Size"}, 0.8f, 0.05f, 2.0f, {"マス目に対する形の大きさ。", "Size of the shape relative to its cell."}),
+            Float("sizeRandom", {"大きさのばらつき", "Size Variation"}, 0.3f, 0.0f, 1.0f),
+            Float("rotation", {"回転", "Rotation"}, 0.0f, 0.0f, 1.0f, {"1 で 1 回転。", "1 is a full turn."}),
+            Float("rotationRandom", {"回転のばらつき", "Rotation Variation"}, 1.0f, 0.0f, 1.0f),
+            Float("luminanceRandom", {"輝度のばらつき", "Luminance Variation"}, 0.0f, 0.0f, 1.0f),
+            Float("mask", {"間引き", "Mask Random"}, 0.0f, 0.0f, 1.0f, {"この割合を消す。", "Fraction removed at random."}),
+            Enum("blend", {"重なり", "Overlap"}, 0, {{"Max", "Max"}, {"Add", "Add"}},
+                 {"重なったところの扱い。Max は明るいほうを残し、Add は足す。", "How overlaps combine. Max keeps the brighter value, Add sums them."}),
+        };
+        def.usesSeed = true;
+        def.tooltip = {"形状の入力を、格子に縛られない位置へばらまく。形状が繋がっていなければ丸を使う。"
+                       "「密度」の入力を繋ぐと、明るいところほど多く置く。",
+                       "Scatters the pattern input at free random positions. Uses a disc when nothing is connected. "
+                       "With the Density input connected, brighter areas get more instances."};
         defs.push_back(def);
     }
 
@@ -672,7 +744,65 @@ std::vector<NodeDef> BuildDefs() {
         defs.push_back(def);
     }
 
+    {
+        NodeDef def;
+        def.type = "derive.normal_blend";
+        def.label = {"Normal Blend", "Normal Blend"};
+        def.category = NodeCategory::Derive;
+        def.shader = L"nodes/derive_normal_blend.hlsl";
+        def.inputs = {{"Base", {"ベース", "Base"}, PinType::Color},
+                      {"Detail", {"ディテール", "Detail"}, PinType::Color},
+                      {"Mask", {"マスク", "Mask"}, PinType::Gray}};
+        def.outputs = {colorOut};
+        def.params = {
+            Float("opacity", {"強さ", "Opacity"}, 1.0f, 0.0f, 1.0f,
+                  {"ディテールを重ねる強さ。0 でベースのまま。", "How strongly the detail is applied. 0 leaves the base unchanged."}),
+        };
+        def.tooltip = {"2 枚の法線を重ねる（Reoriented Normal Mapping）。ベースの凹凸の上に、ディテールの凹凸を載せる。"
+                       "2 枚は同じ形式（DirectX か OpenGL）で揃えること。",
+                       "Combines two normal maps (Reoriented Normal Mapping), laying the detail over the base. "
+                       "Both must use the same format (DirectX or OpenGL)."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
+        def.type = "derive.normal_intensity";
+        def.label = {"Normal Intensity", "Normal Intensity"};
+        def.category = NodeCategory::Derive;
+        def.shader = L"nodes/derive_normal_intensity.hlsl";
+        def.inputs = {{"In", {"法線", "Normal"}, PinType::Color}};
+        def.outputs = {colorOut};
+        def.params = {
+            Float("intensity", {"強さ", "Intensity"}, 1.0f, 0.0f, 4.0f,
+                  {"凹凸の強さの倍率。1 で変化なし、0 で平ら。", "Multiplier for the bump strength. 1 leaves it unchanged, 0 flattens it."}),
+        };
+        def.tooltip = {"法線マップの凹凸の強さを変える。", "Changes the strength of a normal map."};
+        defs.push_back(def);
+    }
+
     // --- 入出力 -------------------------------------------------------------
+    {
+        NodeDef def;
+        def.type = "io.image";
+        def.label = {"Image", "Image"};
+        def.category = NodeCategory::Io;
+        def.shader = L"nodes/io_image.hlsl";
+        def.outputs = {colorOut, {"Alpha", {"アルファ", "Alpha"}, PinType::Gray}};
+        def.params = {
+            File("file", {"ファイル", "File"},
+                 {"画像ファイル（PNG / JPG / TGA / BMP）。グラフを保存したフォルダの中にあれば、相対パスで覚える。",
+                  "Image file (PNG / JPG / TGA / BMP). Stored as a relative path when it is inside the folder of the saved graph."}),
+            Int("tiling", {"タイル", "Tiling"}, 1, 1, 16, {"画像を繰り返す数。", "How many times the image repeats."}),
+            Bool("keepAspect", {"縦横比を保つ", "Keep Aspect"}, false,
+                 {"入れると、画像の縦横比を保って中央に置く（余白は黒、アルファ 0）。切ると、出力全体に引き伸ばす。",
+                  "Keeps the image aspect and centers it (the margin is black with alpha 0). When off, the image is stretched over the whole output."}),
+        };
+        def.tooltip = {"画像ファイルを読み込む。路面標示やロゴのような、手続きで作りにくい形のマスクに使う。"
+                       "色は表示色（sRGB の値）のまま扱う。",
+                       "Loads an image file. Use it for masks that are hard to build procedurally, such as road markings or logos. "
+                       "Colors are kept as display (sRGB) values."};
+        defs.push_back(def);
+    }
     {
         // 入力ピンの並びは MaterialChannel と揃えること。名前は Megascans のマップ名に合わせる。
         NodeDef def;

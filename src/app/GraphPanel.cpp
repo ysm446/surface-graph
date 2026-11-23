@@ -1,5 +1,6 @@
 #include "app/Application.h"
 
+#include "graph/GraphLayout.h"
 #include "io/GraphJson.h"
 #include "ui/Localization.h"
 #include "ui/UiStyle.h"
@@ -11,6 +12,7 @@
 #include <cfloat>
 #include <cmath>
 #include <string>
+#include <unordered_map>
 
 // ノードエディタのパネル。imgui-node-editor の上に、グラフモデル（m_graph）をそのまま描く。
 // ノードの位置はグラフモデルが持ち、エディタには毎回こちらから渡す。
@@ -158,6 +160,43 @@ void Application::PasteClipboard() {
     for (const uint64_t id : added) m_nodesToPlace.push_back(id);
     m_selectedNode = added.back();
     m_selectPending = true;
+}
+
+void Application::ArrangeGraph() {
+    // 列の間と、同じ列のノードの間（キャンバス座標）。
+    const float columnGap = ui::Scaled(120.0f);
+    const float rowGap = ui::Scaled(40.0f);
+    std::vector<uint64_t> ids;
+    std::vector<graph::LayoutBox> boxes;
+    std::unordered_map<uint64_t, size_t> indexOf;
+    for (const graph::Node& node : m_graph.nodes) {
+        const ImVec2 position = ed::GetNodePosition(ed::NodeId(node.id));
+        const ImVec2 size = ed::GetNodeSize(ed::NodeId(node.id));
+        // エディタがまだ知らないノード（このフレームに作ったもの）は対象にしない。
+        if (position.x == FLT_MAX || position.y == FLT_MAX || size.x <= 0.0f) continue;
+        indexOf[node.id] = boxes.size();
+        ids.push_back(node.id);
+        boxes.push_back({position.x, position.y, size.x, size.y});
+    }
+    std::vector<graph::LayoutEdge> edges;
+    for (const graph::Link& link : m_graph.links) {
+        const auto from = indexOf.find(link.fromNode);
+        const auto to = indexOf.find(link.toNode);
+        if (from == indexOf.end() || to == indexOf.end()) continue;
+        edges.push_back({from->second, to->second, link.toPin});
+    }
+    const std::vector<graph::LayoutBox> before = boxes;
+    if (graph::ArrangeColumns(boxes, edges, columnGap, rowGap) == 0) {
+        PushStatus(LogLevel::Info, ui::Tr("整列: 動かすノードはありません", "Arrange: nothing to move"));
+        return;
+    }
+    for (size_t i = 0; i < boxes.size(); ++i) {
+        if (boxes[i].x == before[i].x && boxes[i].y == before[i].y) continue;
+        ed::SetNodePosition(ed::NodeId(ids[i]), ImVec2(boxes[i].x, boxes[i].y));
+    }
+    m_keepArrangeUndo = true;
+    m_navigateCountdown = 2;
+    PushStatus(LogLevel::Info, ui::Tr("グラフを整列しました（Ctrl+Z で戻せます）", "Arranged the graph (Ctrl+Z to undo)"));
 }
 
 void Application::DrawGraphNode(const graph::Node& node) {
@@ -409,6 +448,9 @@ void Application::DrawGraphPanel() {
 
     for (const graph::Node& node : m_graph.nodes) DrawGraphNode(node);
 
+    // 整列（右上のボタンからの要求）。ノードを描いた後でないと大きさが取れない。
+    if (m_arrangeCountdown > 0 && --m_arrangeCountdown == 0) ArrangeGraph();
+
     for (const graph::Link& link : m_graph.links) {
         ed::Link(ed::LinkId(link.id), ed::PinId(MakePinId(link.fromNode, true, link.fromPin)),
                  ed::PinId(MakePinId(link.toNode, false, link.toPin)),
@@ -593,18 +635,37 @@ void Application::DrawGraphPanel() {
     ed::PopStyleColor(4);
 
     // エディタ → モデル。ノードの移動はアンドゥの対象にしないので、起点（m_committed）にも同じ位置を写す。
+    // 整列だけは別で、起点へ写さずに 1 手として積ませる（まとめて動くので、戻せないと困る）。
+    const bool keepUndo = m_keepArrangeUndo;
+    m_keepArrangeUndo = false;
     for (graph::Node& node : m_graph.nodes) {
         const ImVec2 position = ed::GetNodePosition(ed::NodeId(node.id));
         if (position.x == FLT_MAX || position.y == FLT_MAX) continue;
         if (position.x == node.pos[0] && position.y == node.pos[1]) continue;
         node.pos[0] = position.x;
         node.pos[1] = position.y;
+        if (keepUndo) continue;
         if (graph::Node* committed = m_committed.FindNode(node.id)) {
             committed->pos[0] = position.x;
             committed->pos[1] = position.y;
         }
     }
     ed::SetCurrentEditor(nullptr);
+
+    // 右上の整列ボタン。キャンバスに重ねるので子ウィンドウに置く（クリックがキャンバスへ抜けない）。
+    {
+        const float size = std::round(ImGui::GetFrameHeight() * 1.15f);
+        const float margin = ui::Scaled(8.0f);
+        ImGui::SetCursorScreenPos({canvasScreenMin.x + canvasScreenSize.x - size - margin, canvasScreenMin.y + margin});
+        if (ImGui::BeginChild("graphTools", ImVec2(size, size), ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground)) {
+            if (ui::ArrangeIconButton("arrange", size,
+                                      ui::Tr("グラフを整列（左から右へ列に並べる）", "Arrange graph (columns, left to right)"))) {
+                m_arrangeCountdown = 1;
+            }
+        }
+        ImGui::EndChild();
+    }
     ImGui::End();
 }
 

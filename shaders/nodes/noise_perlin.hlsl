@@ -1,5 +1,5 @@
 // noise.perlin: 周期付き勾配ノイズの FBM。
-// params: int scale; int octaves; float gain; int mode (0 FBM / 1 Ridged / 2 Billow)
+// params: int scale; int octaves; float gain; int mode (0 FBM / 1 Ridged / 2 Billow); int scaleY (0 なら scale と同じ)
 #include "sg_noise.hlsli"
 
 [numthreads(8, 8, 1)]
@@ -7,7 +7,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float2 uv = sg_uv(id.xy);
     float sum = 0.0, amplitude = 1.0, total = 0.0;
     // 格子は正方形に保つ（長い辺の分割を縦横比のぶん増やす）。
-    int2 period = max(scale, 1) * sg_aspect_i();
+    int2 period = int2(max(scale, 1), (scaleY > 0) ? scaleY : max(scale, 1)) * sg_aspect_i();
     for (int o = 0; o < octaves; ++o) {
         // 1.41421 を掛けて -1〜1 に広げる。
         float n = sg_perlin(uv * float2(period), period, sgSeed + uint(o) * 7919u) * 1.41421;

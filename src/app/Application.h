@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/Window.h"
 #include "engine/Evaluator.h"
+#include "engine/Export.h"
 #include "engine/MaterialPreview.h"
 #include "graph/Graph.h"
 #include "rhi/Device.h"
@@ -32,7 +33,8 @@ struct StartupOptions {
     std::string language;                    // --language ja|en
     bool gpuValidation = false;
     float uiScale = 0.0f;                    // --ui-scale <倍率>（スクリーンショットの確認用。0 で設定に従う）
-    bool showLightGizmo = false;             // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
+    bool arrange = false;                    // --arrange（スクリーンショットの確認用。開いたグラフを整列する）
+    bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane（スクリーンショットの確認用）
 };
 
@@ -72,6 +74,9 @@ private:
     void DestroyGraphEditor();
     void CopySelection();
     void PasteClipboard();
+    // グラフ全体を列に並べ直す（graph::ArrangeColumns）。ノードを描いた後、エディタの中で呼ぶ。
+    // ノードの移動は普段アンドゥに入れないが、これは 1 手として積む。
+    void ArrangeGraph();
     std::vector<uint64_t> SelectedNodes() const;
     ImTextureID NodeThumbnail(uint64_t node, int output = 0) const;
 
@@ -81,6 +86,8 @@ private:
     void RequestOpen();
     void RequestOpenPath(const std::filesystem::path& path);
     void RequestSave(bool saveAs);
+    // マテリアルの書き出し。フォルダを選び、フレームの外（RunPendingAction）で書く。
+    void RunExport();
     void RunPendingAction();
     void NewDocument();
     bool OpenDocument(const std::filesystem::path& path);
@@ -141,6 +148,9 @@ private:
     PendingAction m_pendingAction = PendingAction::None;
     PendingAction m_confirmAction = PendingAction::None;
     bool m_openConfirm = false;
+    bool m_pendingExport = false;
+    engine::ExportOptions m_exportOptions;
+    std::filesystem::path m_exportDirectory;  // 前回の書き出し先（次のダイアログの初期位置）
     std::filesystem::path m_pendingOpenPath;
     std::vector<std::filesystem::path> m_recentFiles;
     bool m_followSystemScale = false;
@@ -155,6 +165,8 @@ private:
     std::vector<uint64_t> m_nodesToPlace;  // 次のフレームでエディタへ位置を渡すノード
     bool m_placeAllNodes = true;
     int m_navigateCountdown = 0;
+    int m_arrangeCountdown = 0;     // 1 になったフレームで整列する（0 は要求なし）
+    bool m_keepArrangeUndo = false;  // このフレームの移動は整列によるもの（アンドゥの起点へ写さない）
     uint64_t m_selectedNode = 0;
     // ノード追加のポップアップ
     bool m_openAddNode = false;

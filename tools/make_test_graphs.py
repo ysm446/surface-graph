@@ -106,6 +106,25 @@ def all_nodes():
     g.node("adjust.invert", 6, None, {"In": polygon})
     g.node("adjust.invert", 6, None, {"In": invert})
     g.node("adjust.levels", 6, {"gamma": 2.0}, {"In": white})
+
+    # --- ここから下は後から足したノード。既存の ID（基準画像の名前）を変えないよう、末尾に足す。
+    g.node("pattern.stripe", 7, {"direction": 0, "count": 1, "width": 0.6})
+    g.node("pattern.stripe", 7, {"direction": 1, "count": 4, "width": 0.4, "dashes": 3, "dashLength": 0.6, "softness": 0.1})
+    g.node("noise.perlin", 7, {"scale": 2, "scaleY": 16, "octaves": 4})
+    g.node("noise.worley", 7, {"scale": 12, "scaleY": 3, "mode": 0}, seed_offset=3)
+    g.node("noise.value", 7, {"scale": 16, "scaleY": 2, "octaves": 3}, seed_offset=4)
+    detail_normal = g.node("derive.normal", 8, {"intensity": 0.02}, {"In": worley})
+    g.node("derive.normal_blend", 8, {"opacity": 1.0}, {"Base": normal, "Detail": detail_normal})
+    g.node("derive.normal_blend", 8, {"opacity": 1.0}, {"Base": normal, "Detail": detail_normal, "Mask": gradient})
+    g.node("derive.normal_intensity", 8, {"intensity": 3.0}, {"In": normal})
+    g.node("pattern.scatter", 8, {"density": 6, "perCell": 2, "size": 0.9, "luminanceRandom": 0.5}, {"Pattern": polygon})
+    g.node("pattern.scatter", 9, {"density": 10, "size": 0.7, "sizeRandom": 0.6}, seed_offset=5)
+    g.node("pattern.scatter", 9, {"density": 12, "perCell": 3, "size": 1.2, "blend": 1, "luminanceRandom": 0.7},
+           {"Pattern": disc, "Mask": perlin}, seed_offset=6)
+    # 画像は graphs/tests/images/ に置く（相対パス。グラフのファイルがあるフォルダから辿る）。
+    image = g.node("io.image", 9, {"file": "images/arrow.png"})
+    g.node("io.image", 9, {"file": "images/arrow.png", "keepAspect": True, "tiling": 2})
+    g.node("pattern.scatter", 9, {"density": 4, "size": 1.2, "rotationRandom": 0.2}, {"Pattern": (image, "Alpha")}, seed_offset=7)
     g.save("graphs/tests/all_nodes.sgraph")
 
 

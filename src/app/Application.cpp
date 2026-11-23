@@ -95,6 +95,7 @@ bool Application::Initialize(const StartupOptions& options) {
 
     if (options.previewShape >= 0) m_previewSettings.shape = options.previewShape;
     if (options.showLightGizmo) m_lightGizmoUntil = 1.0e12;
+    if (options.arrange) m_arrangeCountdown = 4;  // ノードを 1 度描いて、大きさが決まってから
 
     LoadSettings();
     ApplyUiScale();
@@ -151,6 +152,10 @@ int Application::Run() {
         // UI の拡大率はスタイル・フォントとウィンドウの大きさに効く。フレームの外で。
         ApplyUiScale();
         RunPendingAction();
+        if (m_pendingExport) {
+            m_pendingExport = false;
+            RunExport();
+        }
         if (m_pendingAction == PendingAction::Close) break;
         if (m_pendingHistoryStep != 0) {
             if (m_pendingHistoryStep < 0) Undo();
@@ -264,6 +269,17 @@ void Application::DrawMenuBar() {
         if (ImGui::MenuItem(ui::Tr("保存", "Save"), "Ctrl+S")) RequestSave(false);
         if (ImGui::MenuItem(ui::Tr("名前を付けて保存...", "Save As..."), "Ctrl+Shift+S")) RequestSave(true);
         ImGui::Separator();
+        if (ImGui::MenuItem(ui::Tr("エクスポート...", "Export..."), "Ctrl+E", false, m_graph.FindMaterialNode() != nullptr)) {
+            m_pendingExport = true;
+        }
+        if (ImGui::BeginMenu(ui::Tr("エクスポートの設定", "Export Settings"))) {
+            ImGui::MenuItem(ui::Tr("Opacity を Albedo のアルファに入れる", "Put Opacity into Albedo Alpha"), nullptr,
+                            &m_exportOptions.opacityInAlbedoAlpha);
+            ImGui::MenuItem(ui::Tr("ORM も書き出す（AO / Roughness / Metalness）", "Also Write ORM (AO / Roughness / Metalness)"),
+                            nullptr, &m_exportOptions.packOrm);
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem(ui::Tr("終了", "Exit"))) m_window.RequestClose();
         ImGui::EndMenu();
     }
@@ -356,6 +372,7 @@ void Application::HandleShortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_N, false)) RequestNew();
     if (ImGui::IsKeyPressed(ImGuiKey_O, false)) RequestOpen();
     if (ImGui::IsKeyPressed(ImGuiKey_S, false)) RequestSave(io.KeyShift);
+    if (ImGui::IsKeyPressed(ImGuiKey_E, false) && m_graph.FindMaterialNode() != nullptr) m_pendingExport = true;
     if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) m_pendingHistoryStep = io.KeyShift ? 1 : -1;
     if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) m_pendingHistoryStep = 1;
 }
@@ -446,6 +463,30 @@ void Application::RequestSave(bool saveAs) {
     SaveDocument(path);
 }
 
+void Application::RunExport() {
+    const std::filesystem::path initial = !m_exportDirectory.empty() ? m_exportDirectory
+                                          : (!m_documentPath.empty() ? m_documentPath.parent_path() : std::filesystem::path());
+    const std::filesystem::path directory = ShowPickFolderDialog(ui::Tr(L"書き出し先のフォルダ", L"Export Folder"), initial);
+    if (directory.empty()) return;
+    m_exportDirectory = directory;
+
+    // ファイル名の頭は、保存済みならファイル名、まだならグラフの名前。
+    std::string name = m_graph.name;
+    if (!m_documentPath.empty()) {
+        const std::u8string stem = m_documentPath.stem().u8string();
+        name.assign(stem.begin(), stem.end());
+    }
+    // フレームの外なので、GPU を待ってからフル解像度で評価して読み戻す。
+    m_device.WaitForGpu();
+    engine::ExportResult result;
+    if (engine::ExportMaterial(m_device, m_evaluator, m_graph, directory, name, m_exportOptions, result)) {
+        SG_LOG_INFO(ui::Tr("%zu 枚を書き出しました: %s", "Exported %zu files: %s"), result.files.size(),
+                    ToUtf8Display(directory).c_str());
+    } else {
+        SG_LOG_ERROR(ui::Tr("書き出しに失敗しました: %s", "Export failed: %s"), result.error.c_str());
+    }
+}
+
 void Application::RunPendingAction() {
     const PendingAction action = m_pendingAction;
     if (action == PendingAction::None || action == PendingAction::Close) return;
@@ -485,6 +526,8 @@ void Application::NewDocument() {
     m_graph.AddLink(noise, 0, levels, 0);
     m_graph.AddLink(levels, 0, outputId, static_cast<int>(graph::MaterialChannel::Albedo));
     m_documentPath.clear();
+    // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
+    m_evaluator.SetBaseDirectory(m_documentPath.empty() ? std::filesystem::path() : m_documentPath.parent_path());
     ResetDocumentState();
     m_viewNode = outputId;
 }
@@ -503,6 +546,8 @@ bool Application::OpenDocument(const std::filesystem::path& path) {
     for (const std::string& warning : warnings) SG_LOG_WARN("%s", warning.c_str());
     m_graph = std::move(loaded);
     m_documentPath = path;
+    // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
+    m_evaluator.SetBaseDirectory(m_documentPath.empty() ? std::filesystem::path() : m_documentPath.parent_path());
     ResetDocumentState();
     // 最初は Material Output（無ければ最後のノード）を 2D ビューに出す。
     if (const graph::Node* material = m_graph.FindMaterialNode()) m_viewNode = material->id;
@@ -518,6 +563,7 @@ bool Application::SaveDocument(const std::filesystem::path& path) {
         return false;
     }
     m_documentPath = path;
+    m_evaluator.SetBaseDirectory(m_documentPath.parent_path());
     m_saved = m_graph;
     UpdateWindowTitle();
     AddRecentFile(path);

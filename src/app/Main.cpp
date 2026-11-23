@@ -48,6 +48,8 @@ sg::StartupOptions ParseCommandLine() {
             options.previewShape = (std::wstring(argv[++i]) == L"plane") ? 1 : 0;
         } else if (argument == L"--show-light-gizmo") {
             options.showLightGizmo = true;
+        } else if (argument == L"--arrange") {
+            options.arrange = true;
         } else if (argument == L"--gpu-validation") {
             options.gpuValidation = true;
         } else if (!argument.empty() && argument[0] != L'-' && options.graphPath.empty()) {

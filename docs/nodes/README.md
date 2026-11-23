@@ -1,7 +1,7 @@
 # ノード一覧
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-22 21:46
+更新日時: 2026-11-23 05:30
 
 このファイルの「ノイズ」以降は、ノードの定義（`src/graph/NodeDefinitions.cpp`）から生成する。手で書き換えない。
 ノードを足したら `surfgraph-cli nodes --markdown` の出力で置き換えること。
@@ -25,6 +25,7 @@
 | オクターブ | `octaves` | int | 5 | 1〜10 | 重ねる細かさの段数。 |
 | ゲイン | `gain` | float | 0.5 | 0〜1 | 細かい段ほど弱める割合。 |
 | 種類 | `mode` | enum | FBM | 0 FBM / 1 Ridged / 2 Billow |  |
+| スケール Y | `scaleY` | int | 0 | 0〜64 | 縦のタイルの数。0 なら「スケール」と同じ。違う値にすると、横か縦に伸びた模様になる。 |
 
 ### Worley Noise (`noise.worley`)
 
@@ -40,6 +41,7 @@
 | スケール | `scale` | int | 8 | 1〜64 | タイルの数。整数なので、どの値でも繋ぎ目が出ない。 |
 | 種類 | `mode` | enum | F1 | 0 F1 / 1 F2 / 2 F2 - F1 / 3 Cells | F1 は最も近い点までの距離、F2 - F1 はセルの境界、Cells はセルごとの乱数。 |
 | ばらつき | `jitter` | float | 1 | 0〜1 | 0 で格子、1 で完全にばらつく。 |
+| スケール Y | `scaleY` | int | 0 | 0〜64 | 縦のタイルの数。0 なら「スケール」と同じ。違う値にすると、横か縦に伸びた模様になる。 |
 
 ### Value Noise (`noise.value`)
 
@@ -55,6 +57,7 @@
 | スケール | `scale` | int | 8 | 1〜64 | タイルの数。整数なので、どの値でも繋ぎ目が出ない。 |
 | オクターブ | `octaves` | int | 1 | 1〜10 |  |
 | ゲイン | `gain` | float | 0.5 | 0〜1 |  |
+| スケール Y | `scaleY` | int | 0 | 0〜64 | 縦のタイルの数。0 なら「スケール」と同じ。違う値にすると、横か縦に伸びた模様になる。 |
 
 ### White Noise (`noise.white`)
 
@@ -166,6 +169,44 @@
 | 回転のばらつき | `rotationRandom` | float | 0 | 0〜1 |  |
 | 輝度のばらつき | `luminanceRandom` | float | 0 | 0〜1 |  |
 | 間引き | `mask` | float | 0 | 0〜1 | この割合のタイルを消す。 |
+
+### Stripe (`pattern.stripe`)
+
+帯と破線。本数 1 の横線は、上下の端が 0 で左右に繋がる 1 本の線になる（路面の白線など）。
+
+- シェーダ: `shaders/nodes/pattern_stripe.hlsl`
+- 入力: なし
+- 出力: `Out`（Gray）
+
+| パラメータ | 名前 | 型 | 既定値 | 範囲 | 説明 |
+| --- | --- | --- | --- | --- | --- |
+| 向き | `direction` | enum | 横 | 0 横 / 1 縦 | 線が伸びる向き。 |
+| 本数 | `count` | int | 1 | 1〜64 | 線の数（正方形の単位タイルあたり）。1 なら中央に 1 本。 |
+| 太さ | `width` | float | 0.5 | 0〜1 | 線の間隔に対する太さ。1 で隙間が無くなる。 |
+| 破線の数 | `dashes` | int | 0 | 0〜64 | 線の向きに並べる破線の数（単位タイルあたり）。0 なら実線。 |
+| 破線の長さ | `dashLength` | float | 0.5 | 0〜1 | 破線の間隔に対する長さ。 |
+| ぼかし | `softness` | float | 0 | 0〜0.5 | 縁をなだらかにする幅（線の間隔に対する割合）。0 で硬い縁。 |
+
+### Scatter (`pattern.scatter`)
+
+形状の入力を、格子に縛られない位置へばらまく。形状が繋がっていなければ丸を使う。「密度」の入力を繋ぐと、明るいところほど多く置く。
+
+- シェーダ: `shaders/nodes/pattern_scatter.hlsl`
+- 入力: `Pattern`（Gray）、`Mask`（Gray）
+- 出力: `Out`（Gray）
+- シードを使う
+
+| パラメータ | 名前 | 型 | 既定値 | 範囲 | 説明 |
+| --- | --- | --- | --- | --- | --- |
+| 密度 | `density` | int | 8 | 1〜64 | ばらまく細かさ（単位タイルの一辺を何マスに割るか）。 |
+| マスあたりの数 | `perCell` | int | 1 | 1〜4 | 1 マスに置く数。 |
+| 大きさ | `size` | float | 0.8 | 0.05〜2 | マス目に対する形の大きさ。 |
+| 大きさのばらつき | `sizeRandom` | float | 0.3 | 0〜1 |  |
+| 回転 | `rotation` | float | 0 | 0〜1 | 1 で 1 回転。 |
+| 回転のばらつき | `rotationRandom` | float | 1 | 0〜1 |  |
+| 輝度のばらつき | `luminanceRandom` | float | 0 | 0〜1 |  |
+| 間引き | `mask` | float | 0 | 0〜1 | この割合を消す。 |
+| 重なり | `blend` | enum | Max | 0 Max / 1 Add | 重なったところの扱い。Max は明るいほうを残し、Add は足す。 |
 
 ## 調整
 
@@ -478,7 +519,45 @@
 | 幅 | `width` | float | 0.002 | 0.0005〜0.02 | 曲がりを見る幅（UV 単位）。 |
 | 法線の形式 | `format` | enum | DirectX | 0 DirectX / 1 OpenGL |  |
 
+### Normal Blend (`derive.normal_blend`)
+
+2 枚の法線を重ねる（Reoriented Normal Mapping）。ベースの凹凸の上に、ディテールの凹凸を載せる。2 枚は同じ形式（DirectX か OpenGL）で揃えること。
+
+- シェーダ: `shaders/nodes/derive_normal_blend.hlsl`
+- 入力: `Base`（Color）、`Detail`（Color）、`Mask`（Gray）
+- 出力: `Out`（Color）
+
+| パラメータ | 名前 | 型 | 既定値 | 範囲 | 説明 |
+| --- | --- | --- | --- | --- | --- |
+| 強さ | `opacity` | float | 1 | 0〜1 | ディテールを重ねる強さ。0 でベースのまま。 |
+
+### Normal Intensity (`derive.normal_intensity`)
+
+法線マップの凹凸の強さを変える。
+
+- シェーダ: `shaders/nodes/derive_normal_intensity.hlsl`
+- 入力: `In`（Color）
+- 出力: `Out`（Color）
+
+| パラメータ | 名前 | 型 | 既定値 | 範囲 | 説明 |
+| --- | --- | --- | --- | --- | --- |
+| 強さ | `intensity` | float | 1 | 0〜4 | 凹凸の強さの倍率。1 で変化なし、0 で平ら。 |
+
 ## 入出力
+
+### Image (`io.image`)
+
+画像ファイルを読み込む。路面標示やロゴのような、手続きで作りにくい形のマスクに使う。色は表示色（sRGB の値）のまま扱う。
+
+- シェーダ: `shaders/nodes/io_image.hlsl`
+- 入力: なし
+- 出力: `Out`（Color）、`Alpha`（Gray）
+
+| パラメータ | 名前 | 型 | 既定値 | 範囲 | 説明 |
+| --- | --- | --- | --- | --- | --- |
+| ファイル | `file` | file | （なし） | 画像ファイルのパス | 画像ファイル（PNG / JPG / TGA / BMP）。グラフを保存したフォルダの中にあれば、相対パスで覚える。 |
+| タイル | `tiling` | int | 1 | 1〜16 | 画像を繰り返す数。 |
+| 縦横比を保つ | `keepAspect` | bool | false | — | 入れると、画像の縦横比を保って中央に置く（余白は黒、アルファ 0）。切ると、出力全体に引き伸ばす。 |
 
 ### Material Output (`io.material`)
 

@@ -14,7 +14,8 @@ namespace sg::graph {
 // ピンのデータ型。Auto は定義側だけで使い、「先頭の入力に繋がった型に従う」を表す。
 enum class PinType { Gray, Color, Value, Auto };
 
-enum class ParamType { Float, Int, Float2, Color, Bool, Enum, Gradient };
+// File は画像ファイルのパス（Image ノード）。定数バッファには入らず、評価エンジンがテクスチャとして渡す。
+enum class ParamType { Float, Int, Float2, Color, Bool, Enum, Gradient, File };
 
 inline constexpr int kMaxGradientStops = 8;
 
@@ -26,11 +27,13 @@ struct GradientStop {
 };
 
 // パラメータの値。型ごとに使う場所が決まっている。
-//   Float: f[0] / Float2: f[0..1] / Color: f[0..3] / Int・Bool・Enum: i / Gradient: gradient
+//   Float: f[0] / Float2: f[0..1] / Color: f[0..3] / Int・Bool・Enum: i / Gradient: gradient / File: text
 struct ParamValue {
     float f[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     int i = 0;
     std::vector<GradientStop> gradient;
+    // ファイルのパス（UTF-8）。相対パスは、グラフのファイルがあるフォルダから辿る。
+    std::string text;
 
     bool operator==(const ParamValue&) const = default;
 };
@@ -85,6 +88,8 @@ const NodeDef* FindNodeDef(std::string_view type);
 
 // ノードの入出力の上限（ルート定数の枠）。
 inline constexpr uint32_t kMaxNodeInputs = 8;
+// File のパラメータの画像は、この番号の入力として渡す（Image ノードは入力ピンを持たない）。
+inline constexpr uint32_t kImageInputSlot = kMaxNodeInputs - 1;
 inline constexpr uint32_t kMaxNodeOutputs = 4;
 
 // マテリアルの出力ノード。入力ピンの並びは Megascans のマップに合わせる（この番号がピンの番号）。

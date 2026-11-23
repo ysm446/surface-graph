@@ -53,6 +53,7 @@ Json ParamToJson(const graph::ParamDef& def, const graph::ParamValue& value) {
         case graph::ParamType::Float2: return Json::array({value.f[0], value.f[1]});
         case graph::ParamType::Color:  return Json::array({value.f[0], value.f[1], value.f[2], value.f[3]});
         case graph::ParamType::Bool:   return value.i != 0;
+        case graph::ParamType::File:   return value.text;
         case graph::ParamType::Gradient: {
             Json stops = Json::array();
             for (const graph::GradientStop& stop : value.gradient) {
@@ -72,6 +73,9 @@ void ParamFromJson(const graph::ParamDef& def, const Json& json, graph::ParamVal
             break;
         case graph::ParamType::Float2: ReadFloats(json, value.f, 2); break;
         case graph::ParamType::Color:  ReadFloats(json, value.f, 4); break;
+        case graph::ParamType::File:
+            if (json.is_string()) value.text = json.get<std::string>();
+            break;
         case graph::ParamType::Bool:
             if (json.is_boolean()) value.i = json.get<bool>() ? 1 : 0;
             else if (json.is_number()) value.i = (json.get<double>() != 0.0) ? 1 : 0;

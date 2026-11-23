@@ -6,11 +6,13 @@
 //   surfgraph-cli render <graph> --out <dir> [--res N] [--width W --height H] [--seed S]
 //   surfgraph-cli check  <graph> [--res N] [--no-seamless] [--no-resolution]
 //   surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]
+//   surfgraph-cli export <graph> --out <dir> [--name NAME] [--res N] [--orm] [--no-alpha]
 //   surfgraph-cli nodes [--markdown]
 
 #include "core/ImageIo.h"
 #include "core/Log.h"
 #include "engine/Evaluator.h"
+#include "engine/Export.h"
 #include "graph/Graph.h"
 #include "io/GraphJson.h"
 #include "rhi/Device.h"
@@ -50,6 +52,9 @@ struct Options {
     bool update = false;
     bool checkSeamless = true;
     bool checkResolution = true;
+    std::string exportName;    // export: ファイル名の頭（省くとグラフの名前）
+    bool exportOrm = false;    // export: ORM の 1 枚も書く
+    bool exportAlpha = true;   // export: Opacity を Albedo のアルファに詰める
 };
 
 struct Gpu {
@@ -329,6 +334,28 @@ int CommandCheck(Gpu& gpu, const Options& options, const graph::Graph& graph) {
     return (failures == 0) ? 0 : 1;
 }
 
+// Material Output に繋いだマップを書き出す。
+int CommandExport(Gpu& gpu, const Options& options, const graph::Graph& graph) {
+    if (options.outDirectory.empty()) {
+        std::printf("--out <dir> が必要です\n");
+        return 2;
+    }
+    engine::ExportOptions exportOptions;
+    exportOptions.resolution = options.resolution;
+    exportOptions.packOrm = options.exportOrm;
+    exportOptions.opacityInAlbedoAlpha = options.exportAlpha;
+    engine::ExportResult result;
+    const std::string name = options.exportName.empty() ? graph.name : options.exportName;
+    const bool ok = engine::ExportMaterial(gpu.device, gpu.evaluator, graph, options.outDirectory, name, exportOptions, result);
+    for (const std::filesystem::path& path : result.files) std::printf("  %ls\n", path.filename().c_str());
+    if (!ok) {
+        std::printf("書き出しに失敗しました: %s\n", result.error.c_str());
+        return 1;
+    }
+    std::printf("%zu 枚を書き出しました: %ls\n", result.files.size(), options.outDirectory.c_str());
+    return 0;
+}
+
 int CommandGolden(Gpu& gpu, const Options& options, const graph::Graph& graph) {
     if (options.outDirectory.empty()) {
         std::printf("--dir <dir> が必要です\n");
@@ -443,6 +470,9 @@ int CommandNodes(bool markdown) {
                         case graph::ParamType::Gradient:
                             std::printf("gradient | 黒 → 白 | 最大 %d 色", graph::kMaxGradientStops);
                             break;
+                        case graph::ParamType::File:
+                            std::printf("file | （なし） | 画像ファイルのパス");
+                            break;
                     }
                     std::printf(" | %s |\n", param.tooltip.Get());
                 }
@@ -458,6 +488,7 @@ void PrintUsage() {
         "surfgraph-cli render <graph> --out <dir> [--res N] [--width W --height H] [--seed S]\n"
         "surfgraph-cli check  <graph> [--res N] [--no-seamless] [--no-resolution]\n"
         "surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]\n"
+        "surfgraph-cli export <graph> --out <dir> [--name NAME] [--res N] [--orm] [--no-alpha]\n"
         "surfgraph-cli nodes [--markdown]\n");
 }
 
@@ -486,6 +517,14 @@ int wmain(int argc, wchar_t** argv) {
             options.hasSeed = true;
         } else if (argument == L"--update" || argument == L"--markdown") {
             options.update = true;
+        } else if (argument == L"--orm") {
+            options.exportOrm = true;
+        } else if (argument == L"--no-alpha") {
+            options.exportAlpha = false;
+        } else if (argument == L"--name" && i + 1 < argc) {
+            const std::wstring name = argv[++i];
+            options.exportName.clear();
+            for (const wchar_t c : name) options.exportName += (c < 128) ? static_cast<char>(c) : '_';
         } else if (argument == L"--no-seamless") {
             options.checkSeamless = false;
         } else if (argument == L"--no-resolution") {
@@ -499,7 +538,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     if (options.command == L"nodes") return CommandNodes(options.update);
-    if (options.command != L"render" && options.command != L"check" && options.command != L"golden") {
+    if (options.command != L"render" && options.command != L"check" && options.command != L"golden" && options.command != L"export") {
         PrintUsage();
         return 2;
     }
@@ -526,9 +565,12 @@ int wmain(int argc, wchar_t** argv) {
         gpu.Destroy();
         return 1;
     }
+    // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
+    gpu.evaluator.SetBaseDirectory(std::filesystem::absolute(options.graphPath).parent_path());
     int result = 1;
     if (options.command == L"render") result = CommandRender(gpu, options, graph);
     else if (options.command == L"check") result = CommandCheck(gpu, options, graph);
+    else if (options.command == L"export") result = CommandExport(gpu, options, graph);
     else result = CommandGolden(gpu, options, graph);
     gpu.Destroy();
     return result;

@@ -490,6 +490,46 @@ bool SaveIconButton(const char* id, float size, const char* tooltip) {
     return clicked;
 }
 
+bool ArrangeIconButton(const char* id, float size, const char* tooltip) {
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    if (hovered && tooltip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        ImGui::SetTooltip("%s", tooltip);
+    }
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 max(min.x + size, min.y + size);
+    // 下地はボタンと同じ色（キャンバスの点やリンクの上でも読める）。
+    draw->AddRectFilled(min, max,
+                        ImGui::GetColorU32(held ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button),
+                        ImGui::GetStyle().FrameRounding);
+    draw->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_Border), ImGui::GetStyle().FrameRounding);
+
+    const ImU32 color = ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    const float thickness = Scaled(1.3f);
+    const float glyph = std::min(size * 0.64f, ImGui::GetTextLineHeight() * 1.1f);
+    const ImVec2 a(std::floor(min.x + (size - glyph) * 0.5f), std::floor(min.y + (size - glyph) * 0.5f));
+    const float box = glyph * 0.34f;
+    // 左の箱（縦の中央）と、右の箱 2 個（上と下）。
+    const ImVec2 leftMin(a.x, a.y + (glyph - box) * 0.5f);
+    const ImVec2 topMin(a.x + glyph - box, a.y);
+    const ImVec2 bottomMin(a.x + glyph - box, a.y + glyph - box);
+    draw->AddRectFilled(leftMin, ImVec2(leftMin.x + box, leftMin.y + box), color);
+    draw->AddRectFilled(topMin, ImVec2(topMin.x + box, topMin.y + box), color);
+    draw->AddRectFilled(bottomMin, ImVec2(bottomMin.x + box, bottomMin.y + box), color);
+    // 左の箱の右端から、右の箱の左端へ。
+    const ImVec2 from(leftMin.x + box, a.y + glyph * 0.5f);
+    const float midX = (from.x + topMin.x) * 0.5f;
+    for (const float y : {topMin.y + box * 0.5f, bottomMin.y + box * 0.5f}) {
+        draw->AddLine(from, ImVec2(midX, from.y), color, thickness);
+        draw->AddLine(ImVec2(midX, from.y), ImVec2(midX, y), color, thickness);
+        draw->AddLine(ImVec2(midX, y), ImVec2(topMin.x, y), color, thickness);
+    }
+    return clicked;
+}
+
 ImU32 WarnColor() {
     return ImGui::GetColorU32(kWarn);
 }

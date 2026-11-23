@@ -1,7 +1,7 @@
 # architecture — 全体の設計
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-23 03:59
+更新日時: 2026-11-23 05:30
 
 ## 層の分け方
 
@@ -60,6 +60,9 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
   正方形でない出力での距離の扱いは [shader-conventions.md](shader-conventions.md)。
 - **スライダー操作中**は、エディタが縦横比を保ったまま 1/4（長い辺の下限 256）にして低解像度で評価する。
   解像度もハッシュに入るので、離すと自動でフル解像度の評価に戻る。
+- **画像ファイル**: `File` のパラメータを持つノード（Image）は、評価エンジンが画像を RGBA8 のテクスチャへ
+  読み込んで入力として渡す。パスとファイルの更新時刻をハッシュに入れるので、画像を上書き保存すると
+  読み直す。相対パスは `Evaluator::SetBaseDirectory`（グラフのファイルがあるフォルダ）から辿る。
 - **エラー**: シェーダのコンパイルに失敗したノードは `NodeResult::error` に DXC のメッセージを持つ。
   エディタは赤い枠とツールチップで出す。
 
@@ -98,3 +101,4 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 - ノードの足し方: [adding-nodes.md](adding-nodes.md)
 - UI の規約: [design-guide.md](design-guide.md)
 - CLI: [docs/reference/cli.md](../reference/cli.md)
+- 書き出し: [docs/reference/export.md](../reference/export.md)

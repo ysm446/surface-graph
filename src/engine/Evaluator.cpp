@@ -1,5 +1,6 @@
 #include "engine/Evaluator.h"
 
+#include "core/ImageIo.h"
 #include "core/Log.h"
 #include "rhi/PipelineCache.h"
 #include "rhi/ShaderCompiler.h"
@@ -94,6 +95,11 @@ void Evaluator::Destroy() {
     }
     m_pool.clear();
     m_device->DeferRelease(m_black);
+    for (auto& [path, image] : m_images) {
+        m_textureBytes -= BytesOf(image.texture);
+        m_device->DeferRelease(image.texture);
+    }
+    m_images.clear();
     m_defCache.clear();
     m_textureBytes = 0;
     m_device = nullptr;
@@ -123,6 +129,79 @@ const Evaluator::DefCache& Evaluator::CacheFor(const graph::NodeDef& def) {
     for (const char c : cache.layout.hlsl) define += static_cast<wchar_t>(c);
     cache.defines.push_back(std::move(define));
     return m_defCache.emplace(&def, std::move(cache)).first->second;
+}
+
+namespace {
+
+// ファイルの更新時刻（読めなければ 0）。ハッシュに入れて、書き換わったら評価し直す。
+int64_t WriteTimeOf(const std::filesystem::path& path) {
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(path, ec);
+    return ec ? 0 : static_cast<int64_t>(time.time_since_epoch().count());
+}
+
+}  // namespace
+
+std::filesystem::path Evaluator::ResolvePath(const std::string& text) const {
+    if (text.empty()) return {};
+    std::filesystem::path path(std::u8string(text.begin(), text.end()));
+    if (path.is_relative() && !m_baseDirectory.empty()) path = m_baseDirectory / path;
+    return path.lexically_normal();
+}
+
+rhi::GpuTexture* Evaluator::AcquireImage(ID3D12GraphicsCommandList* commandList, const std::filesystem::path& path) {
+    const int64_t writeTime = WriteTimeOf(path);
+    if (writeTime == 0) return nullptr;
+    ImageEntry& entry = m_images[path.wstring()];
+    if (entry.texture.IsValid() && entry.writeTime == writeTime) return &entry.texture;
+
+    LdrImage image;
+    if (!LoadLdrImage(path, image) || !image.IsValid()) return nullptr;
+    if (entry.texture.IsValid()) {
+        m_textureBytes -= BytesOf(entry.texture);
+        m_device->DeferRelease(entry.texture);
+        entry.texture = {};
+    }
+
+    // 色は表示色（sRGB の値）のまま持つので、UNORM でそのまま読む（変換しない）。
+    rhi::TextureDesc desc;
+    desc.width = image.width;
+    desc.height = image.height;
+    desc.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.debugName = L"NodeImage";
+    if (!m_device->Allocator().CreateTexture2D(desc, entry.texture)) return nullptr;
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    UINT64 totalBytes = 0;
+    const D3D12_RESOURCE_DESC resourceDesc = entry.texture.resource->GetDesc();
+    m_device->GetDevice()->GetCopyableFootprints(&resourceDesc, 0, 1, 0, &footprint, nullptr, nullptr, &totalBytes);
+    rhi::GpuBuffer upload;
+    void* mapped = nullptr;
+    if (!m_device->Allocator().CreateUploadBuffer(totalBytes, L"NodeImageUpload", upload) ||
+        FAILED(upload.resource->Map(0, nullptr, &mapped))) {
+        m_device->DeferRelease(upload);
+        m_device->DeferRelease(entry.texture);
+        entry.texture = {};
+        return nullptr;
+    }
+    const size_t rowBytes = image.RowPitchInBytes();
+    for (uint32_t y = 0; y < image.height; ++y) {
+        std::memcpy(static_cast<uint8_t*>(mapped) + footprint.Offset + static_cast<size_t>(y) * footprint.Footprint.RowPitch,
+                    image.pixels.data() + static_cast<size_t>(y) * rowBytes, rowBytes);
+    }
+    upload.resource->Unmap(0, nullptr);
+
+    rhi::TransitionIfNeeded(commandList, entry.texture, D3D12_RESOURCE_STATE_COPY_DEST);
+    const CD3DX12_TEXTURE_COPY_LOCATION dst(entry.texture.resource.Get(), 0);
+    const CD3DX12_TEXTURE_COPY_LOCATION src(upload.resource.Get(), footprint);
+    commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    rhi::TransitionIfNeeded(commandList, entry.texture, kReadState);
+    // アップロード用のバッファは、GPU がコピーを終えるまで生かしておく。
+    m_device->DeferRelease(upload);
+
+    entry.writeTime = writeTime;
+    m_textureBytes += BytesOf(entry.texture);
+    return &entry.texture;
 }
 
 PooledTexture Evaluator::Acquire(graph::TextureSize size, DXGI_FORMAT format) {
@@ -234,6 +313,11 @@ bool Evaluator::Evaluate(ID3D12GraphicsCommandList* commandList, const EvaluateR
             const graph::ParamValue& value = node.params[i];
             hasher.Add(value.f);
             hasher.Add(value.i);
+            if (def.params[i].type == graph::ParamType::File) {
+                // パスと、ファイルの更新時刻。画像を上書き保存したら評価し直す。
+                hasher.Bytes(value.text.data(), value.text.size());
+                hasher.Add(WriteTimeOf(ResolvePath(value.text)));
+            }
             for (const graph::GradientStop& stop : value.gradient) hasher.Add(stop);
         }
         for (size_t i = 0; i < def.inputs.size(); ++i) {
@@ -323,6 +407,21 @@ bool Evaluator::EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph
         constants.inputs[i] = source.texture.texture.SrvIndex();
         constants.connected |= 1u << i;
         if (source.type == graph::PinType::Color) constants.colorMask |= 1u << i;
+    }
+
+    // 画像ファイル（File のパラメータ）。入力 kImageInputSlot として渡す。
+    for (size_t i = 0; i < def.params.size() && i < node.params.size(); ++i) {
+        if (def.params[i].type != graph::ParamType::File || node.params[i].text.empty()) continue;
+        rhi::GpuTexture* image = AcquireImage(commandList, ResolvePath(node.params[i].text));
+        if (image == nullptr) {
+            result.error = std::string(ui::Tr("画像を読み込めません: ", "Could not load the image: ")) + node.params[i].text;
+            return false;
+        }
+        rhi::TransitionIfNeeded(commandList, *image, kReadState);
+        constants.inputs[graph::kImageInputSlot] = image->SrvIndex();
+        constants.connected |= 1u << graph::kImageInputSlot;
+        constants.colorMask |= 1u << graph::kImageInputSlot;
+        break;
     }
 
     // パラメータ（b1）。

@@ -1,7 +1,7 @@
 # progress — 進捗と注意点
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-23 03:59
+更新日時: 2026-11-23 08:11
 
 ## 現在の状態
 
@@ -9,7 +9,8 @@
 - フェーズ 2（エディタ）: **主要部分を実装済み**。関門「GUI で編集 → 保存」は、起動とスクリーンショットまで
   確認した。マウスでの編集操作は人の手で未確認。
 - フェーズ 3: **3D ビューの最初の版を実装済み**（球 / 平面、GGX、手続きの空、パララックス）。
-  出力は Megascans に合わせた Material Output ノードに置き換えた。エクスポートは未着手。
+  出力は Megascans に合わせた Material Output ノードに置き換えた。エクスポートは PNG 8 bit と EXR まで
+  入った（[export.md](../reference/export.md)）。
 - フェーズ 4: ノードの一部を先行して実装した（下の表）。
 
 ## 完了済み
@@ -34,7 +35,7 @@
 - ImGui Docking のレイアウト（上に 2D ビュー、中央にグラフ、右にパラメータ / グラフ設定）。
 - ノードエディタ: サムネイル付きノード、型ごとのピンの色、リンクの作成と削除、
   検索付きのノード追加メニュー（右クリック / Tab）、リンクを空白へ落として追加、
-  コピー / 貼り付け / 複製、エラーのノードの赤枠と理由の表示。
+  コピー / 貼り付け / 複製、エラーのノードの赤枠と理由の表示、右上のボタンでの整列（列に並べ直す）。
 - パラメータ: 型ごとの行、グラデーションの編集、シードの「ランダム」、ノード単位の解像度、
   右クリックで「グラフ入力として公開」。
 - 2D ビュー: パン・ズーム、3×3 タイル、チャンネル単独表示、出力の選択（出力ピンのクリックで切り替え。選択とは別）。
@@ -54,19 +55,19 @@
 - 既定のレイアウトを、上段の左に 2D ビュー、右に 3D ビューに変えた。
 - 設計は [docs/design/material-output.md](../design/material-output.md)。
 
-### 実装済みのノード（35 種類）
+### 実装済みのノード（40 種類）
 
 | カテゴリ | ノード |
 | --- | --- |
-| ノイズ | Perlin（FBM / Ridged / Billow）、Worley（F1 / F2 / F2−F1 / Cells）、Value、White |
+| ノイズ | Perlin（FBM / Ridged / Billow）、Worley（F1 / F2 / F2−F1 / Cells）、Value、White。Perlin / Worley / Value は縦のスケールを別に持てる |
 | 形状 | Shape（矩形・円・多角形、ベベル）、Gradient、Uniform Color |
-| パターン | Brick、Checker、Tile Generator |
+| パターン | Brick、Checker、Tile Generator、Stripe（帯・破線）、Scatter |
 | 調整 | Levels、Invert、Clamp、Histogram Scan、Histogram Range、Threshold |
 | フィルタ | Blur、Directional Blur、Warp、Directional Warp、Slope Blur、Edge Detect、Transform、Distance（JFA） |
 | ブレンド | Blend（8 モード、マスク入力）、Height Blend |
 | カラー | Gradient Map、HSL、Grayscale、Channel Split / Merge |
-| 導出 | Height → Normal、Height → AO、Curvature |
-| 入出力 | Material Output |
+| 導出 | Height → Normal、Height → AO、Curvature、Normal Blend、Normal Intensity |
+| 入出力 | Material Output、Image（画像ファイル） |
 
 一覧と各パラメータは [docs/nodes/README.md](../nodes/README.md)。
 
@@ -87,10 +88,12 @@
 
 - 3D ビューの残り: HDRI による IBL（事前フィルタ + BRDF LUT）、キューブ / 円柱 / OBJ、AgX、
   テッセレーションによる変位、セルフシャドウ、表示設定の保存。
-- エクスポート（PNG 8 / 16bit、EXR、DDS、パッキングのプリセット、別解像度での再評価）。
+- エクスポートの残り（PNG 16bit、DDS、Megascans の `_ORD` などのパッキングのプリセット、設定の保存）。
+  PNG 8 bit / EXR / Albedo のアルファ / ORM は入った。
 - 優先度 A の残り: Curve、Bitmap Input。
-- 優先度 B の残り: Domain-warped FBM、Crystal、Scatter、Flood Fill、Splatter Circular、
-  Bevel、Non-uniform Blur、Make It Tile、Normal Blend、Normal → Height、Edge Wear、Dirt。
+- 優先度 B の残り: Domain-warped FBM、Crystal、Flood Fill、Splatter Circular、
+  Bevel、Non-uniform Blur、Make It Tile、Normal → Height、Edge Wear、Dirt。
+  （Scatter、Normal Blend / Intensity、Stripe、Image は入った。）
 
 ### フェーズ 4
 
@@ -102,7 +105,7 @@
   ビルドと起動、`--screenshot-ui` での目視までは確認した。操作感は人が触って確かめる必要がある。
 - **ゴール 2 の計測**（2048² のグラフを 100ms 以内に再評価）。計測の仕組み（ノードごとの GPU 時間）が
   まだ無い。レンガのグラフ（38 ノード、2048²）は、起動からスクリーンショットまで 1 秒未満で終わっている。
-- エンジンへ取り込んだときの見た目（エクスポートが無いので確かめられない）。
+- エンジンへ取り込んだときの見た目（エクスポートしたファイルを、実際のエンジンで開いて確かめていない）。
 - **3D ビューのマウス操作**（視点とライトのドラッグ、ホイール、表示設定のポップアップ）。
   球と平面の表示はスクリーンショットで確認した。
 - **Megascans の法線の向き**。公式資料で確認できておらず、既定を DirectX にしてある

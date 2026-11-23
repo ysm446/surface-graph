@@ -3,6 +3,7 @@
 #include "graph/Graph.h"
 #include "rhi/Device.h"
 
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -70,6 +71,10 @@ public:
     NodeResult* Result(uint64_t node);
     const NodeResult* Result(uint64_t node) const;
 
+    // グラフのファイルがあるフォルダ。Image ノードの相対パスをここから辿る。
+    void SetBaseDirectory(const std::filesystem::path& directory) { m_baseDirectory = directory; }
+    std::filesystem::path ResolvePath(const std::string& text) const;
+
     // シェーダを読み直したときに呼ぶ。全ノードを次の Evaluate で再計算する。
     void InvalidateAll() { ++m_generation; }
     // キャッシュを全部捨てる（グラフを開き直したとき、決定論テスト）。
@@ -88,6 +93,8 @@ private:
 
     const DefCache& CacheFor(const graph::NodeDef& def);
     PooledTexture Acquire(graph::TextureSize size, DXGI_FORMAT format);
+    // 画像ファイルのテクスチャ。読み込めなければ nullptr。初回と、ファイルが書き換わったときに読み直す。
+    rhi::GpuTexture* AcquireImage(ID3D12GraphicsCommandList* commandList, const std::filesystem::path& path);
     void Release(PooledTexture& texture);
     void ReleaseResult(NodeResult& result);
     bool EvaluateNode(ID3D12GraphicsCommandList* commandList, const graph::Graph& graph,
@@ -100,6 +107,13 @@ private:
     std::unordered_map<uint64_t, NodeResult> m_results;
     std::unordered_map<const graph::NodeDef*, DefCache> m_defCache;
     std::vector<PooledTexture> m_pool;
+    // Image ノードの画像。キーはフルパス。
+    struct ImageEntry {
+        rhi::GpuTexture texture;
+        int64_t writeTime = 0;
+    };
+    std::unordered_map<std::wstring, ImageEntry> m_images;
+    std::filesystem::path m_baseDirectory;
     // 繋がっていない入力に渡す 1×1 の黒。
     rhi::GpuTexture m_black;
     bool m_blackCleared = false;
