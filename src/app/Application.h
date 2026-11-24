@@ -37,6 +37,7 @@ struct StartupOptions {
     bool viewGrid = false;                   // --view-grid（スクリーンショットの確認用。2D ビューに UV グリッドを出す）
     bool uvChecker = false;                  // --uv-checker（スクリーンショットの確認用。3D ビューに UV チェッカーを貼る）
     bool showSettings = false;               // --show-settings（スクリーンショットの確認用。設定のウィンドウを開く）
+    bool showConfirm = false;                // --show-confirm（スクリーンショットの確認用。未保存の確認を開く）
     bool arrange = false;                    // --arrange（スクリーンショットの確認用。開いたグラフを整列する）
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane|cube（スクリーンショットの確認用）

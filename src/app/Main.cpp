@@ -57,6 +57,8 @@ sg::StartupOptions ParseCommandLine() {
             options.uvChecker = true;
         } else if (argument == L"--show-settings") {
             options.showSettings = true;
+        } else if (argument == L"--show-confirm") {
+            options.showConfirm = true;
         } else if (argument == L"--arrange") {
             options.arrange = true;
         } else if (argument == L"--gpu-validation") {

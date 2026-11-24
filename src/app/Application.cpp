@@ -95,6 +95,7 @@ bool Application::Initialize(const StartupOptions& options) {
 
     if (options.showLightGizmo) m_lightGizmoUntil = 1.0e12;
     if (options.showSettings) m_showSettings = true;
+    if (options.showConfirm) m_openConfirm = true;
     if (options.uvChecker) m_previewSettings.uvChecker = true;
     if (options.viewGrid) m_viewGrid = true;
     if (options.viewTiling) m_viewTiling = true;

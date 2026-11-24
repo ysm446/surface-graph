@@ -856,8 +856,16 @@ void Application::DrawConfirmDiscard() {
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    // 左に警告マーク、右に文面を、縦の中央で揃えて並べる。
+    const float iconSize = ImGui::GetFrameHeight() * 1.8f;
+    ui::WarningIcon(iconSize);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x * 2.0f);
+    ImGui::BeginGroup();
+    ImGui::Dummy(ImVec2(0.0f, (iconSize - ImGui::GetTextLineHeight()) * 0.5f - ImGui::GetStyle().ItemSpacing.y));
     ImGui::TextUnformatted(ui::Tr("グラフに保存していない変更があります。保存しますか？",
                                   "The graph has unsaved changes. Save them?"));
+    ImGui::EndGroup();
+    ImGui::Spacing();
     ImGui::Spacing();
     if (ui::Button(ui::Tr("保存する", "Save"), ui::kWideButtonWidth)) {
         RequestSave(false);

@@ -271,6 +271,30 @@ void DrawWarningTriangle(ImDrawList* drawList, const ImVec2& center, float size,
 
 }  // namespace
 
+void WarningIcon(float size) {
+    if (size <= 0.0f) size = ImGui::GetFrameHeight() * 2.0f;
+    ImGui::Dummy(ImVec2(size, size));
+    const ImVec2 min = ImGui::GetItemRectMin();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    // 塗りつぶした三角の中に、下地の色で「!」を抜く（確認ダイアログの警告マーク）。
+    const float cx = min.x + size * 0.5f;
+    const float top = min.y + size * 0.06f;
+    const float bottom = min.y + size * 0.92f;
+    const float half = size * 0.5f;
+    const ImU32 fill = WarnColor();
+    const float rounding = std::max(1.0f, size * 0.06f);
+    drawList->AddTriangleFilled(ImVec2(cx, top), ImVec2(cx + half, bottom), ImVec2(cx - half, bottom), fill);
+    // 角を少し丸める（同じ色の太い輪郭を重ねる）。
+    drawList->AddTriangle(ImVec2(cx, top + rounding), ImVec2(cx + half - rounding, bottom - rounding * 0.5f),
+                          ImVec2(cx - half + rounding, bottom - rounding * 0.5f), fill, rounding * 2.0f);
+    const ImU32 mark = ImGui::GetColorU32(ImGuiCol_PopupBg);
+    const float thickness = std::max(1.5f, size * 0.1f);
+    const float barTop = min.y + size * 0.36f;
+    const float barBottom = min.y + size * 0.66f;
+    drawList->AddLine(ImVec2(cx, barTop), ImVec2(cx, barBottom), mark, thickness);
+    drawList->AddCircleFilled(ImVec2(cx, min.y + size * 0.78f), thickness * 0.6f, mark);
+}
+
 void MissingThumbnail(const ImVec2& min, const ImVec2& max) {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const float rounding = ImGui::GetStyle().FrameRounding;

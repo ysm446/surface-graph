@@ -253,6 +253,10 @@ bool ArrangeIconButton(const char* id, float size, const char* tooltip);
 ImU32 WarnColor();
 ImU32 ErrorColor();
 
+// 確認ダイアログの警告マーク。塗りつぶした三角（WarnColor）に「!」を抜いて描く。
+// size 角の場所を取る。省くとフレームの高さの 2 倍。
+void WarningIcon(float size = 0.0f);
+
 // 補助テキスト。**今の状態**（繋がっていない、未保存、結果の数など）を 1 行で添えるときに使う。
 // 変わらない説明は SectionHeader(label, help) か HelpMarker() に載せ、行を取らない。
 void HintText(const char* format, ...);
