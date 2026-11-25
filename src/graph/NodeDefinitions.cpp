@@ -873,8 +873,26 @@ std::vector<NodeDef> BuildDefs() {
             Bool("closed", {"閉じる", "Closed"}, false,
                  {"入れると、最後の頂点から最初の頂点へ繋ぐ。塗りには閉じたパスが要る。",
                   "Connects the last point back to the first. Fill needs a closed path."}),
+            Enum("curve", {"曲線", "Curve"}, 0,
+                 {{"直線", "Line"}, {"2 次ベジェ", "Quadratic Bezier"}, {"3 次 B スプライン", "Cubic B-Spline"}, {"クロソイド", "Clothoid"}},
+                 {"頂点の繋ぎ方。曲線は頂点を通らず、折れ線の内側を回って角を丸める（開いたパスの両端だけは通る）。"
+                  "2 次ベジェ: 角ごとに丸め、その外は直線のまま。3 次 B スプライン: 全体がさらに滑らか。"
+                  "クロソイド: 曲がり始めが緩やかな緩和曲線（道路の線形）。",
+                  "How the points are joined. Curves do not pass through the points; they run inside the polyline and round its "
+                  "corners (only the two ends of an open path are on the curve). Quadratic Bezier: rounds each corner and keeps "
+                  "the rest straight. Cubic B-Spline: smoother overall. Clothoid: a transition curve that eases into the turn "
+                  "(road alignment)."}),
+            Float("rounding", {"丸め", "Rounding"}, 1.0f, 0.0f, 1.0f,
+                  {"どれだけ角を取るか。0 で折れ線のまま、1 で最大（隣の頂点との中点まで丸める）。",
+                   "How much of each corner is rounded. 0 keeps the polyline; 1 rounds up to the midpoints of the adjacent edges."}),
+            Float("clothoidRatio", {"クロソイドの割合", "Clothoid Ratio"}, 0.5f, 0.0f, 1.0f,
+                  {"クロソイドのとき、曲がる角度のうち緩和曲線が受け持つ割合。0 で円弧だけ、1 で緩和曲線だけ。",
+                   "For Clothoid: the share of the turn handled by the transition curves. 0 is a plain arc; 1 has no arc."}),
+            Int("segments", {"分割数", "Segments"}, 8, 1, 32,
+                {"角 1 つ（3 次 B スプラインでは区間 1 つ）を割る数。多いほど滑らかで、頂点が増える。",
+                 "Subdivisions per corner (per span for Cubic B-Spline). More is smoother, with more vertices."}),
         };
-        def.tooltip = {"手で置いた頂点を繋いだパス。", "A path through hand-placed points."};
+        def.tooltip = {"手で置いた頂点を、直線か曲線で繋いだパス。", "A path through hand-placed points, joined by lines or curves."};
         defs.push_back(def);
     }
     {

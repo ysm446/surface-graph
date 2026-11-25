@@ -39,6 +39,8 @@ sg::StartupOptions ParseCommandLine() {
             options.screenshotFrame = static_cast<uint32_t>(std::clamp(::_wtoi(argv[++i]), 1, 100000));
         } else if (argument == L"--select-node" && i + 1 < argc) {
             options.selectNode = static_cast<uint64_t>(::_wtoi64(argv[++i]));
+        } else if (argument == L"--select-path-point" && i + 1 < argc) {
+            options.selectPathPoint = ::_wtoi(argv[++i]);
         } else if (argument == L"--enter-node" && i + 1 < argc) {
             options.enterNode = static_cast<uint64_t>(::_wtoi64(argv[++i]));
         } else if (argument == L"--language" && i + 1 < argc) {

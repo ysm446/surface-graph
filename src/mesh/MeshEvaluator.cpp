@@ -1,6 +1,7 @@
 #include "mesh/MeshEvaluator.h"
 
 #include "mesh/MeshBuilder.h"
+#include "mesh/PathCurve.h"
 #include "ui/Localization.h"
 
 #include <cstring>
@@ -11,7 +12,7 @@ namespace sg::mesh {
 namespace {
 
 // パラメータの番号。src/graph/NodeDefinitions.cpp の並びと揃えること。
-enum PathPointsParam { kPointsPoints, kPointsClosed };
+enum PathPointsParam { kPointsPoints, kPointsClosed, kPointsCurve, kPointsRounding, kPointsClothoidRatio, kPointsSegments };
 enum PathRectParam { kRectWidth, kRectHeight };
 enum StrokeParam { kStrokeWidth, kStrokeAlign, kStrokeCorner, kStrokeSegments, kStrokeCaps, kStrokeOverlap };
 enum OutputParam { kOutputName };
@@ -71,10 +72,16 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
     const std::string_view type = node.def->type;
     const std::vector<graph::ParamValue>& params = node.params;
     if (type == "path.points") {
-        Path path;
-        path.points = params[kPointsPoints].points;
-        path.closed = (params[kPointsClosed].i != 0);
-        result.path = std::make_shared<const Path>(std::move(path));
+        // 置いた頂点は制御点。曲線なら、それをなぞった折れ線にしてから下流へ渡す。
+        Path control;
+        control.points = params[kPointsPoints].points;
+        control.closed = (params[kPointsClosed].i != 0);
+        CurveOptions curve;
+        curve.kind = static_cast<CurveKind>(params[kPointsCurve].i);
+        curve.rounding = params[kPointsRounding].f[0];
+        curve.clothoidRatio = params[kPointsClothoidRatio].f[0];
+        curve.segments = params[kPointsSegments].i;
+        result.path = std::make_shared<const Path>(SampleCurve(control, curve));
     } else if (type == "path.rect") {
         result.path = std::make_shared<const Path>(MakeRectPath(params[kRectWidth].f[0], params[kRectHeight].f[0]));
     } else if (type == "mesh.fill") {

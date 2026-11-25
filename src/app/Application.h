@@ -53,6 +53,7 @@ struct StartupOptions {
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane|cube（スクリーンショットの確認用）
     uint64_t enterNode = 0;                  // --enter-node <id>（スクリーンショットの確認用。プロジェクトのノードの中に入る）
+    int selectPathPoint = -1;                // --select-path-point <n>（スクリーンショットの確認用。パスの頂点を選ぶ。1 始まり）
 };
 
 // エディタ本体。UI はグラフモデル（m_graph）を編集するだけで、GPU は評価エンジン越しにしか触らない。
@@ -274,6 +275,19 @@ private:
     bool m_projectSelectPending = false;
     bool m_openProjectAdd = false;
     ImVec2 m_projectAddPosition = {0.0f, 0.0f};
+    // 真上からのビュー。縮尺は、表示するものが替わったときと「全体」を押したときにだけ測り直す
+    // （頂点を動かしている間に縮尺が変わると、掴んだ点が逃げる）。
+    graph::Point2 m_structureCenter = {0.0f, 0.0f};
+    float m_structureExtent = 4.0f;
+    bool m_structureFitPending = true;
+    uint64_t m_structureKey = 0;
+    // パスの編集（真上からのビューで、パスノードの頂点を動かす）。
+    uint64_t m_pathEditNode = 0;  // 編集しているパスノード
+    int m_pathPoint = -1;         // 選んだ頂点の番号（-1 なら無し）
+    bool m_pathDragging = false;  // 頂点を掴んでいる
+    int m_pathMenuPoint = -1;     // 右クリックのメニューを開いた頂点と線
+    int m_pathMenuSegment = -1;
+    graph::Point2 m_pathMenuPosition = {0.0f, 0.0f};
 
     // 評価。スライダーを掴んでいる間は低解像度で評価し、離したらフル解像度で評価し直す。
     bool m_interactive = false;

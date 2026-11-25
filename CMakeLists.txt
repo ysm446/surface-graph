@@ -125,6 +125,8 @@ add_library(sg_graph STATIC
     src/mesh/MeshEvaluator.cpp
     src/mesh/MeshEvaluator.h
     src/mesh/MeshTypes.h
+    src/mesh/PathCurve.cpp
+    src/mesh/PathCurve.h
     src/project/Project.cpp
     src/project/Project.h
     src/core/Log.cpp

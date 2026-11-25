@@ -369,18 +369,26 @@
               "points": [
                 [
                   2.6,
-                  -0.8
+                  -0.9
                 ],
                 [
-                  3.5,
-                  -0.8
+                  3.6,
+                  -0.9
                 ],
                 [
-                  3.5,
-                  0.7
+                  3.6,
+                  0.2
+                ],
+                [
+                  4.4,
+                  0.8
                 ]
               ],
-              "closed": false
+              "closed": false,
+              "curve": 3,
+              "rounding": 1.0,
+              "clothoidRatio": 0.5,
+              "segments": 8
             }
           },
           {

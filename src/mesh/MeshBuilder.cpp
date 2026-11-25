@@ -198,7 +198,9 @@ struct StrokeBuilder {
             const float after = (i + 1 == segmentCount) ? lengths[i] + endTrim : lengths[i];
             const float reach = std::min({std::max(std::abs(offsetOuter), std::abs(offsetInner)) * std::abs(Cross(d1, d2)) / denominator,
                                           before * 0.5f, after * 0.5f});
-            const bool straighten = reach > 1.0e-5f;
+            // 緩い折れ（曲線をなぞった細かい折れ線）では断面がほとんど傾かないので、足さない（頂点が 3 倍に増えるだけになる）。
+            constexpr float kStraightenTurn = 0.26f;  // 約 15°
+            const bool straighten = reach > 1.0e-5f && std::abs(turn) > kStraightenTurn;
             if (straighten) {
                 const Point2 base = Sub(points[i], Mul(d1, reach));
                 section(Add(base, Mul(n1, offsetOuter)), Add(base, Mul(n1, offsetInner)), distance - reach);
@@ -256,6 +258,29 @@ struct StrokeBuilder {
         return result;
     }
 };
+
+// 折れ線の始まりを道のりで start だけ進め、終わりを end だけ戻す（角や端のピースのぶんを空ける）。
+// 曲線をなぞった細かい折れ線でも、辺をまたいで削れる。長さが足りなければ false。
+bool TrimRun(std::vector<Point2>& run, float start, float end) {
+    const auto trimFront = [](std::vector<Point2>& points, float amount) {
+        while (amount > kEpsilon) {
+            if (points.size() < 2) return false;
+            const float length = Length(Sub(points[1], points[0]));
+            if (length > amount + kEpsilon) {
+                points[0] = Add(points[0], Mul(Sub(points[1], points[0]), amount / length));
+                return true;
+            }
+            amount -= length;
+            points.erase(points.begin());
+        }
+        return points.size() >= 2;
+    };
+    if (!trimFront(run, start)) return false;
+    std::reverse(run.begin(), run.end());
+    const bool ok = trimFront(run, end);
+    std::reverse(run.begin(), run.end());
+    return ok;
+}
 
 }  // namespace
 
@@ -406,6 +431,23 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
 
     const bool caps = options.caps && !path.closed;
     std::vector<Point2> run;
+    // 辺を 1 本足す。角や端のピースのぶんは、道のりで削ってから渡す。
+    const auto addEdge = [&](float startTrim, float endTrim) {
+        if (!TrimRun(run, startTrim, endTrim)) {
+            error = ui::Tr("辺が帯の幅に対して短すぎます（角や端のピースが収まりません）",
+                           "An edge is too short for the band width (corner or end pieces do not fit)");
+            return false;
+        }
+        return builder.AddEdge(run, 0.0f, 0.0f, round, roundSegments, error);
+    };
+    // 端のピースの向き。パスの端点から、辺が始まる所（終わる所）へ向かう向き。
+    // 曲線の端では最初の辺が帯の幅より短いので、最初の辺の向きではなく、ピースの両端を結ぶ向きにする。
+    Point2 startCapDirection = direction(0, 1);
+    Point2 endCapDirection = direction(count - 2, count - 1);
+    const auto towards = [](Point2 from, Point2 to, Point2 fallback) {
+        const Point2 delta = Sub(to, from);
+        return (Length(delta) > kEpsilon) ? Mul(delta, 1.0f / Length(delta)) : fallback;
+    };
     if (!path.closed) {
         // 端から角、角から角、角から端。
         std::vector<size_t> stops = {0};
@@ -416,8 +458,10 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
             const size_t to = stops[s + 1];
             run.assign(path.points.begin() + static_cast<ptrdiff_t>(from), path.points.begin() + static_cast<ptrdiff_t>(to) + 1);
             const float startTrim = (from == 0) ? (caps ? options.width : 0.0f) : trimAfter(from);
-            const float endTrim = (to == count - 1) ? (caps ? -options.width : 0.0f) : trimBefore(to);
-            if (!builder.AddEdge(run, startTrim, endTrim, round, roundSegments, error)) return false;
+            const float endTrim = (to == count - 1) ? (caps ? options.width : 0.0f) : -trimBefore(to);
+            if (!addEdge(startTrim, endTrim)) return false;
+            if (caps && from == 0) startCapDirection = towards(path.points.front(), run.front(), startCapDirection);
+            if (caps && to == count - 1) endCapDirection = towards(run.back(), path.points.back(), endCapDirection);
         }
     } else if (corners.empty()) {
         // 一周を 1 つの辺にする。継ぎ目が角に来ないよう、最初の辺の中点から始める。
@@ -425,7 +469,7 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
         run.push_back(middle);
         for (size_t i = 1; i <= count; ++i) run.push_back(path.points[i % count]);
         run.push_back(middle);
-        if (!builder.AddEdge(run, 0.0f, 0.0f, round, roundSegments, error)) return false;
+        if (!addEdge(0.0f, 0.0f)) return false;
     } else {
         // 角から次の角まで。角が 1 つなら、その角から一周して戻る。
         for (size_t c = 0; c < corners.size(); ++c) {
@@ -437,14 +481,14 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
                 run.push_back(path.points[i]);
                 if (i == to) break;
             }
-            if (!builder.AddEdge(run, trimAfter(from), trimBefore(to), round, roundSegments, error)) return false;
+            if (!addEdge(trimAfter(from), -trimBefore(to))) return false;
         }
     }
 
     for (const size_t i : corners) builder.AddCorner(path.points[i], incoming(i), turnsLeft(i));
     if (caps) {
-        builder.AddCap(path.points.front(), direction(0, 1), true);
-        builder.AddCap(path.points.back(), direction(count - 2, count - 1), false);
+        builder.AddCap(path.points.front(), startCapDirection, true);
+        builder.AddCap(path.points.back(), endCapDirection, false);
     }
 
     out = builder.Finish();
