@@ -112,7 +112,10 @@ float3 ShadeMaterial(float2 uv, float3 tangent, float3 bitangent, float3 view, o
         if (gNormalFormat == 1u) n.y = -n.y;
         normal = normalize(tangent * n.x + bitangent * n.y + float3(0.0, 1.0, 0.0) * max(n.z, 1e-3));
     }
-    return ShadeSurface(albedo, roughness, metalness, ao, normal, view, Light());
+    // 裏から見ているとき（視点が地面の下）は、表から見たときと同じ明るさで照らす（視線を地面で折り返す）。
+    // 光は上から来るので、法線を裏返すだけだと裏面が真っ暗になり、形が読めない。
+    const float3 shadingView = float3(view.x, abs(view.y), view.z);
+    return ShadeSurface(albedo, roughness, metalness, ao, normal, shadingView, Light());
 }
 
 // --- 背景 ---------------------------------------------------------------------

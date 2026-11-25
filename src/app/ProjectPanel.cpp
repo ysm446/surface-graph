@@ -1258,13 +1258,14 @@ struct AssetCamera {
         return true;
     }
 
-    // 画面上の点を通る視線と、地面の交点。地平線より上なら偽。
+    // 画面上の点を通る視線と、地面の交点。地平線の向こう（視線が地面から離れていく向き）なら偽。
+    // 視点が地面の下にあるときは、下から見上げた交点になる。
     bool ToWorld(ImVec2 screen, graph::Point2& out) const {
         const float nx = (screen.x - areaMin.x - size.x * 0.5f) / (size.y * 0.5f) * tanHalfFov;
         const float ny = -(screen.y - areaMin.y - size.y * 0.5f) / (size.y * 0.5f) * tanHalfFov;
         const float d[3] = {forward[0] + right[0] * nx + up[0] * ny, forward[1] + right[1] * nx + up[1] * ny,
                             forward[2] + right[2] * nx + up[2] * ny};
-        if (d[1] >= -1.0e-4f) return false;
+        if (std::abs(d[1]) < 1.0e-4f) return false;
         const float t = -position[1] / d[1];
         // 遠すぎる点（地平線のそば）は置かせない。
         if (t <= 0.0f || t > 200.0f) return false;
@@ -1276,7 +1277,7 @@ struct AssetCamera {
 AssetCamera MakeAssetCamera(const engine::PreviewSettings& settings, const ImVec2& areaMin, const ImVec2& areaMax, float centerX,
                             float centerZ, float halfExtent) {
     AssetCamera camera;
-    const float pitch = std::clamp(settings.pitch, 0.03f, 1.5f);
+    const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
     const float distance = std::clamp(settings.distance, 1.2f, 20.0f);
     const float offset[3] = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};
     const auto normalize = [](float v[3]) {

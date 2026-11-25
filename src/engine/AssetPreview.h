@@ -71,6 +71,7 @@ struct AssetPreviewScene {
 // 3D ビューのアセットの表示。アセットをラスタライズして RGBA8 のテクスチャへ描く。
 // シェーダは shaders/preview/asset_preview.hlsl。設計は docs/design/decal-asset.md の「3D ビュー」。
 //
+// 視点は地面の下へも回り込める。下から見るときは地面を描かず、レイヤーの裏面が見える（両面を描く）。
 // 背景 → 地面 → レイヤー（下から）の順に、深度を使わずに重ねる。同じレイヤーの中はインデックスの順
 // （辺が先、角と端が後）。レイヤーはアルファブレンドで、不透明度は Opacity × 頂点の alpha。
 // PreviewSettings の uvChecker を入れると、マテリアルの代わりに区画の確認用の絵を貼る。

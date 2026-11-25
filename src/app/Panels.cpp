@@ -745,8 +745,7 @@ void Application::DrawPreviewLightGizmo(const ImVec2& areaMin, const ImVec2& are
         const float length = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
         return (length > 1e-6f) ? GizmoVec3{v.x / length, v.y / length, v.z / length} : GizmoVec3{0.0f, 1.0f, 0.0f};
     };
-    // アセットの表示は地面の下へ潜らない（engine::AssetPreview と同じ下限）。
-    const float pitch = std::clamp(settings.pitch, assetView ? 0.03f : -1.5f, 1.5f);
+    const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
     const float distance = std::clamp(settings.distance, 1.2f, 20.0f);
     const GizmoVec3 offset = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};
     const GizmoVec3 forward = normalize({-offset.x, -offset.y, -offset.z});
@@ -984,7 +983,8 @@ void Application::DrawView3dPanel() {
         const bool meshEditing = assetView && m_level == Level::Mesh;
         const auto orbit = [&]() {
             settings.yaw -= io.MouseDelta.x * 0.01f;
-            settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, assetView ? 0.03f : -1.5f, 1.5f);
+            // アセットの表示でも、地面の下へ回り込める（裏面を見る）。
+            settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, -1.5f, 1.5f);
         };
         if (editingPath) {
             // 頂点の編集中。

@@ -54,6 +54,8 @@ struct StartupOptions {
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane|cube（スクリーンショットの確認用）
     uint64_t enterNode = 0;                  // --enter-node <id>（スクリーンショットの確認用。プロジェクトのノードの中に入る）
+    bool hasViewPitch = false;               // --view-pitch <ラジアン>（スクリーンショットの確認用。アセットの表示の視点の仰角。負で地面の下）
+    float viewPitch = 0.0f;
     bool wireframe = false;                  // --wireframe（スクリーンショットの確認用。3D ビューにワイヤーフレームを重ねる）
     int selectPathPoint = -1;                // --select-path-point <n>（スクリーンショットの確認用。パスの頂点を選ぶ。1 始まり、0 なら全部）
 };

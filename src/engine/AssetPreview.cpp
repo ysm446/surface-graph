@@ -176,8 +176,9 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     // 描く範囲は呼び出し側が決める。中心を原点に、halfExtent を 1 に揃えた空間で描く（球 / 平面の表示と同じカメラが使える）。
     const float halfExtent = std::max(scene.halfExtent, 1.0e-3f);
 
-    // カメラは原点のまわりを回り、パンのぶんだけ平行にずれる（MaterialPreview と同じ式）。地面の下へは潜らせない。
-    const float pitch = std::clamp(settings.pitch, 0.03f, 1.5f);
+    // カメラは原点のまわりを回り、パンのぶんだけ平行にずれる（MaterialPreview と同じ式）。
+    // 地面の下へも回り込める（裏面を見る）。
+    const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
     const Vec3 offset = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};
     const float distance = std::clamp(settings.distance, 1.2f, 20.0f);
     const Vec3 forward = Normalize({-offset.x, -offset.y, -offset.z});
@@ -241,9 +242,12 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
         StoreBinding(constants, scene.ground);
         constants.flags |= kFlagGroundMaterial;
     }
-    commandList->SetPipelineState(groundPipeline);
-    commandList->SetGraphicsRoot32BitConstants(0, rhi::kRootConstantCount, &constants, 0);
-    commandList->DrawInstanced(6, 1, 0, 0);
+    // 視点が地面の下にあるときは、地面を描かない（下から、貼り物の裏面だけが見える）。
+    if (position.y >= 0.0f) {
+        commandList->SetPipelineState(groundPipeline);
+        commandList->SetGraphicsRoot32BitConstants(0, rhi::kRootConstantCount, &constants, 0);
+        commandList->DrawInstanced(6, 1, 0, 0);
+    }
 
     // レイヤーと重ね描き。頂点はフレームのアップロードリングへ書く（メッシュは小さい）。
     commandList->SetPipelineState(layerPipeline);

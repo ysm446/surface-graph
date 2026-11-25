@@ -167,6 +167,7 @@ bool Application::Initialize(const StartupOptions& options) {
     if (options.showConfirm) m_openConfirm = true;
     if (options.uvChecker) m_previewSettings.uvChecker = m_assetViewSettings.uvChecker = true;
     if (options.wireframe) m_assetWireframe = true;
+    if (options.hasViewPitch) m_assetViewSettings.pitch = options.viewPitch;
     if (options.viewGrid) m_viewGrid = true;
     if (options.viewTiling) m_viewTiling = true;
     if (options.arrange) m_arrangeCountdown = 4;  // ノードを 1 度描いて、大きさが決まってから
