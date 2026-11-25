@@ -1,7 +1,7 @@
 # architecture — 全体の設計
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-23 05:30
+更新日時: 2026-11-25 16:21
 
 ## 層の分け方
 
@@ -97,6 +97,7 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 
 - グラフの形式: [docs/reference/file-format.md](../reference/file-format.md)
 - マテリアルの出力と 3D ビュー: [material-output.md](material-output.md)
+- デカールアセット（プロジェクト、メッシュグラフ。未実装）: [decal-asset.md](decal-asset.md)
 - シェーダの規約: [shader-conventions.md](shader-conventions.md)
 - ノードの足し方: [adding-nodes.md](adding-nodes.md)
 - UI の規約: [design-guide.md](design-guide.md)
