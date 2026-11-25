@@ -20,6 +20,7 @@
 
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -145,8 +146,32 @@ private:
     void RemoveProjectNode(uint64_t id);
     void DrawProjectParameters();
     void DrawProjectSettings();
-    // 2D ビューの代わりに、真上から見たパスとメッシュを描く（プロジェクトとメッシュの階層）。
+    // プロジェクトとメッシュの階層の 2D ビュー。UV（既定）か、真上から見たパスとメッシュ。
     void DrawStructureView();
+    void DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax);
+    void DrawTopDownView(const ImVec2& areaMin, const ImVec2& areaMax);
+    // パスの頂点の編集（真上からのビューと 3D ビューで共用）。view は、地面の点と画面の点を行き来する方法。
+    struct PathEditView {
+        std::function<bool(graph::Point2, ImVec2&)> toScreen;  // カメラの後ろなら偽
+        std::function<bool(ImVec2, graph::Point2&)> toWorld;   // 地面と交わらなければ偽
+        bool hovered = false;
+    };
+    struct PathEditHover {
+        int point = -1;    // カーソルの下の頂点
+        int segment = -1;  // カーソルの下の線（頂点 segment と次の頂点の間）
+        graph::Point2 segmentPoint = {0.0f, 0.0f};
+        int insertIndex = 0;  // Ctrl + 空のクリックで足す頂点が入る場所
+        bool onGround = false;
+        graph::Point2 preview = {0.0f, 0.0f};  // 足す頂点の位置（吸着した後）
+    };
+    graph::Node* PathEditNode();
+    PathEditHover HandlePathEdit(graph::Node& node, const PathEditView& view);
+    void DrawPathEditOverlay(ImDrawList* drawList, const graph::Node& node, const PathEditView& view, const PathEditHover& hover);
+    void DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool showPoint);
+    void HandlePathEditIn3d(const ImVec2& areaMin, const ImVec2& areaMax);
+    void DrawPathEditIn3d(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
+    // メッシュの階層で表示中の出力を、3D ビューと UV の表示に出せる形にする。
+    void UpdateMeshPreview();
     void RunAssetExport();
     uint64_t AddEmbeddedMaterial(const std::string& name);
 
@@ -281,7 +306,26 @@ private:
     float m_structureExtent = 4.0f;
     bool m_structureFitPending = true;
     uint64_t m_structureKey = 0;
-    // パスの編集（真上からのビューで、パスノードの頂点を動かす）。
+    // 2D ビューを、UV ではなく真上からの図にする（プロジェクトとメッシュの階層）。
+    bool m_view2dTopDown = false;
+    // 3D ビューのアセットの表示の、描く範囲（中心と半分の長さ。メートル）。
+    float m_assetFrameX = 0.0f;
+    float m_assetFrameZ = 0.0f;
+    float m_assetFrameHalf = 1.0f;
+    bool m_assetFrameRefit = true;
+    // メッシュの階層で表示中の出力。
+    struct MeshPreview {
+        uint64_t node = 0;
+        bool hasMesh = false;
+        int assetLayer = -1;  // もうアセットに入っていれば、そのレイヤーの番号
+        mesh::AssetLayer layer;  // 入っていなければ、既定の区画の配置で UV を割り付けたもの
+        graph::MaterialLayout layout;
+        std::shared_ptr<const mesh::Path> path;
+        std::string error;
+    };
+    MeshPreview m_meshPreview;
+    PathEditHover m_path3dHover;
+    // パスの編集（真上からのビューと 3D ビューで、パスノードの頂点を動かす）。
     uint64_t m_pathEditNode = 0;  // 編集しているパスノード
     int m_pathPoint = -1;         // 選んだ頂点の番号（-1 なら無し）
     bool m_pathDragging = false;  // 頂点を掴んでいる

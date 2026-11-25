@@ -36,9 +36,27 @@ struct AssetPreviewMaterial {
     graph::TextureSize size = {1024, 1024};
 };
 
+// アセットの上に重ねて描く、確認用のメッシュ。メッシュグラフで表示中の出力（まだアセットに入っていないもの）と、
+// パスの線に使う。マテリアルは使わない。
+struct AssetPreviewOverlay {
+    // uv は割り付け済み。solid でなければ、layout の区画の確認用の絵を貼る。
+    mesh::AssetLayer layer;
+    graph::MaterialLayout layout;
+    // 真なら color（表示色と不透明度）の単色で塗る。
+    bool solid = false;
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 struct AssetPreviewScene {
     const mesh::Asset* asset = nullptr;
     std::vector<AssetPreviewMaterial> materials;
+    // レイヤーの後に、この順で重ねる。
+    std::vector<AssetPreviewOverlay> overlays;
+    // 描く範囲。中心（ワールド、メートル）と、画面にちょうど収めたい半分の長さ。
+    // 呼び出し側が決める（頂点を動かしている間に範囲が変わると、掴んだ点が逃げるため）。
+    float centerX = 0.0f;
+    float centerZ = 0.0f;
+    float halfExtent = 1.0f;
     // 下地。無ければ単色の地面に 1 m の格子。
     bool hasGround = false;
     MaterialBinding ground;

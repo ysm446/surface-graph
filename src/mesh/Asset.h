@@ -28,6 +28,9 @@ struct AssetLayer {
     std::vector<Point2> tangents;
     uint64_t materialId = 0;
     std::string name;
+    // 元になった、プロジェクトのメッシュノードと、その中のメッシュ出力ノードの ID（エディタが対応を引くのに使う）。
+    uint64_t sourceNode = 0;
+    uint64_t sourceOutput = 0;
 };
 
 struct Asset {

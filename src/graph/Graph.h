@@ -160,7 +160,7 @@ struct UvRect {
 // マテリアルの区画の配置。貼り物のメッシュのピース（mesh::PieceKind）を、テクスチャのどこへ割り付けるか。
 // JSON には名前で書く。設計は docs/design/decal-asset.md。
 //   Tile:        全体で 1 つ。U も V もタイルする（塗りに使う）
-//   Band:        全体が辺。U だけタイルする（線に使う）
+//   Band:        全体が辺。U だけタイルする（帯に使う）
 //   BandCorners: 辺の段と、外角 / 内角 / 始端 / 終端のセル
 enum class LayoutKind { Tile, Band, BandCorners };
 

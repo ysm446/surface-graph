@@ -928,7 +928,8 @@ std::vector<NodeDef> BuildDefs() {
     {
         NodeDef def;
         def.type = "mesh.stroke";
-        def.label = {"線", "Stroke"};
+        // 表示名は「帯」。type の mesh.stroke は保存形式なので変えない（はじめは「線」と呼んでいた）。
+        def.label = {"帯", "Band"};
         def.kind = GraphKind::Mesh;
         def.category = NodeCategory::Mesh;
         def.inputs = {pathIn};

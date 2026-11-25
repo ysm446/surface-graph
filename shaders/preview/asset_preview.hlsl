@@ -19,7 +19,7 @@ cbuffer DrawConstants : register(b0) {
     uint gConnected;      // ビット i が立っていれば MaterialChannel i が繋がっている
     uint gColorMask;      // ビット i が立っていれば、そのマップは Color
     uint gNormalFormat;   // 0 DirectX / 1 OpenGL
-    uint gFlags;          // ビット 0: 背景に空を出す / 1: 区画の確認用の絵を貼る / 2: 地面にマテリアルがある
+    uint gFlags;          // ビット 0: 背景に空を出す / 1: 区画の確認用の絵を貼る / 2: 地面にマテリアルがある / 3: 単色で塗る
     uint gReserved0;
     uint4 gReserved1;
     uint4 gReserved2;
@@ -47,6 +47,7 @@ cbuffer SceneParams : register(b1) {
     float4 gRegionEnd;
     float2 gTextureSize;     // マップの大きさ（区画の確認用の絵の升目を正方形にする）
     float2 gGroundTile;      // 地面の 1 タイルの大きさ（メートル。U 方向と V 方向）
+    float4 gSolidColor;      // 単色で塗るときの色（表示色）と不透明度。パスの線の重ね描きに使う
 };
 
 SamplerState gAnisotropicWrap : register(s3);
@@ -228,6 +229,7 @@ float3 LayoutChecker(float2 uv) {
 
 float4 PSLayer(LayerVertex input) : SV_Target0 {
     const float alpha = saturate(input.alpha);
+    if ((gFlags & 8u) != 0u) return float4(gSolidColor.rgb, gSolidColor.a * alpha);
     if ((gFlags & 2u) != 0u) return float4(LayoutChecker(input.uv), alpha);
 
     float3 tangent = float3(input.tangent.x, 0.0, input.tangent.z);

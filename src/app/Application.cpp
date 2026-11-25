@@ -309,6 +309,7 @@ void Application::PollShaderHotReload() {
 void Application::DrawUi() {
     // メッシュグラフは CPU で評価する。ノードのエラーと真上からのビューに使うので、描く前に済ませる。
     if (m_level == Level::Mesh) m_meshEvaluator.Evaluate(m_graph);
+    UpdateMeshPreview();
     HandleShortcuts();
     DrawMenuBar();
 

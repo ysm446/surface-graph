@@ -405,13 +405,13 @@ void Application::DrawGraphSettingsPanel() {
                              "Which part of the texture is used when the material is applied to a decal mesh (in a project). "
                              "It does not affect evaluation."));
     if (ui::BeginPropertyTable("DecalRows")) {
-        static const ui::LocalizedText kLayoutItems[] = {{"タイル（塗り）", "Tile (fill)"}, {"帯（線）", "Band (stroke)"},
+        static const ui::LocalizedText kLayoutItems[] = {{"タイル（塗り）", "Tile (fill)"}, {"帯", "Band"},
                                                          {"帯 + 角と端", "Band + corners"}};
         const auto layoutItems = ui::Tr(kLayoutItems);
         int layoutKind = static_cast<int>(m_graph.layout.kind);
         const bool layoutChanged = ui::PropertyCombo(
             ui::Tr("区画の配置", "Layout"), &layoutKind, layoutItems.data(), static_cast<int>(layoutItems.size()), 0,
-            ui::Tr("タイル: 全体を塗りに使う。帯: 全体を線の辺に使う（U だけ繰り返す）。"
+            ui::Tr("タイル: 全体を塗りに使う。帯: 全体を帯の辺に使う（U だけ繰り返す）。"
                    "帯 + 角と端: 上の段が辺、その下に外角 / 内角 / 始端 / 終端のセルが左から並ぶ。",
                    "Tile: the whole map fills areas. Band: the whole map is the stroke's edge (repeats along U). "
                    "Band + corners: the top row is the edge; below it are the outer corner, inner corner, start cap and end cap cells."));
@@ -879,6 +879,19 @@ void Application::DrawView3dPanel() {
         ImGui::SameLine();
     }
     if (ImGui::Button(ui::Tr("表示設定", "View Settings"))) ImGui::OpenPopup("##view3dSettings");
+    // アセットは、真上から見る向きへすぐ切り替えられるようにする（頂点を置くときに、寸法を揃えやすい）。
+    if (assetView) {
+        ImGui::SameLine();
+        if (ImGui::Button(ui::Tr("真上", "Top"))) {
+            settings.yaw = 0.0f;
+            settings.pitch = 1.5f;
+            settings.panX = 0.0f;
+            settings.panY = 0.0f;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("%s", ui::Tr("真上から見る（X が右、Z が手前）。F で元の向きに戻す", "Look straight down (X right, Z toward you). F restores the view"));
+        }
+    }
     // 「視点を戻す」はボタンではなく F キー（3D ビューに載せて押す。terrain-graph のビューポートと同じキー）。
     if (!assetView && m_graph.FindMaterialNode() == nullptr) {
         ImGui::SameLine();
@@ -940,9 +953,16 @@ void Application::DrawView3dPanel() {
     m_view3dHeight = (areaSize.y > 8.0f) ? static_cast<uint32_t>(areaSize.y) : 0;
     if (m_view3dWidth > 0 && m_view3dHeight > 0) {
         ImGui::SetCursorScreenPos(areaMin);
-        ImGui::InvisibleButton("##view3dCanvas", areaSize, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        ImGui::InvisibleButton("##view3dCanvas", areaSize,
+                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
         const ImGuiIO& io = ImGui::GetIO();
-        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
+        // メッシュグラフでパスノードを選んでいれば、ここで頂点を編集できる。頂点を掴んでいる間と、
+        // Ctrl を押している間（頂点を足す）は、視点を動かさない。
+        if (assetView) HandlePathEditIn3d(areaMin, areaMax);
+        const bool editingPath = assetView && m_pathEditNode != 0 && (m_pathDragging || io.KeyCtrl);
+        if (editingPath) {
+            // 頂点の編集中。
+        } else if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
             // 中ボタンドラッグでパン。掴んだ場所がマウスに付いてくる量（注視点の距離での 1 ピクセルの長さ）。
             const float unitsPerPixel = 2.0f * settings.distance * std::tan(engine::kPreviewFovY * 0.5f) / areaSize.y;
             settings.panX = std::clamp(settings.panX - io.MouseDelta.x * unitsPerPixel, -10.0f, 10.0f);
@@ -978,6 +998,7 @@ void Application::DrawView3dPanel() {
             settings.distance = defaults.distance;
             settings.panX = 0.0f;
             settings.panY = 0.0f;
+            m_assetFrameRefit = true;
         }
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         const rhi::GpuTexture& texture = assetView ? m_assetPreview.Texture() : m_preview.Texture();
@@ -987,6 +1008,7 @@ void Application::DrawView3dPanel() {
             drawList->AddRectFilled(areaMin, areaMax, ImGui::GetColorU32(ImGuiCol_ChildBg));
         }
         DrawPreviewLightGizmo(areaMin, areaMax);
+        if (assetView) DrawPathEditIn3d(drawList, areaMin, areaMax);
     }
     ImGui::End();
 }

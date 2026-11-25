@@ -34,6 +34,7 @@ static_assert(sizeof(DrawConstants) == sizeof(uint32_t) * rhi::kRootConstantCoun
 constexpr uint32_t kFlagSky = 1u;
 constexpr uint32_t kFlagChecker = 2u;
 constexpr uint32_t kFlagGroundMaterial = 4u;
+constexpr uint32_t kFlagSolid = 8u;
 
 // b1。HLSL の cbuffer の詰め方（float3 + float で 16 バイト）に合わせる。
 struct SceneParams {
@@ -56,6 +57,7 @@ struct SceneParams {
     float regionEnd[4];
     float textureSize[2];
     float groundTile[2];
+    float solidColor[4];
 };
 
 // 頂点（rhi::VertexLayout::Decal）。
@@ -169,22 +171,8 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     ID3D12PipelineState* layerPipeline = m_pipelines->GetGraphics(pipelineDesc);
     if (backgroundPipeline == nullptr || groundPipeline == nullptr || layerPipeline == nullptr) return;
 
-    // アセットの範囲。中心を原点に、長い辺の半分を 1 に揃えた空間で描く（球 / 平面の表示と同じカメラが使える）。
-    float minX = 0.0f, maxX = 0.0f, minZ = 0.0f, maxZ = 0.0f;
-    bool any = false;
-    if (scene.asset != nullptr) {
-        for (const mesh::AssetLayer& layer : scene.asset->layers) {
-            for (const mesh::MeshVertex& vertex : layer.mesh.vertices) {
-                minX = any ? std::min(minX, vertex.position.x) : vertex.position.x;
-                maxX = any ? std::max(maxX, vertex.position.x) : vertex.position.x;
-                minZ = any ? std::min(minZ, vertex.position.y) : vertex.position.y;
-                maxZ = any ? std::max(maxZ, vertex.position.y) : vertex.position.y;
-                any = true;
-            }
-        }
-    }
-    // 斜めから見ても全体が収まるよう、長い辺の半分より少し広く取る。
-    const float halfExtent = std::max(0.5f * std::max(maxX - minX, maxZ - minZ), 0.25f) * 1.35f;
+    // 描く範囲は呼び出し側が決める。中心を原点に、halfExtent を 1 に揃えた空間で描く（球 / 平面の表示と同じカメラが使える）。
+    const float halfExtent = std::max(scene.halfExtent, 1.0e-3f);
 
     // カメラは原点のまわりを回り、パンのぶんだけ平行にずれる（MaterialPreview と同じ式）。地面の下へは潜らせない。
     const float pitch = std::clamp(settings.pitch, 0.03f, 1.5f);
@@ -211,8 +199,8 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     params.exposure = settings.exposure;
     params.lightIntensity = settings.lightIntensity;
     params.environmentIntensity = settings.environmentIntensity;
-    params.center[0] = (minX + maxX) * 0.5f;
-    params.center[2] = (minZ + maxZ) * 0.5f;
+    params.center[0] = scene.centerX;
+    params.center[2] = scene.centerZ;
     params.invScale = 1.0f / halfExtent;
     params.textureSize[0] = params.textureSize[1] = 1024.0f;
     params.groundTile[0] = std::max(scene.groundTileU, 1.0e-3f);
@@ -254,23 +242,50 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     commandList->SetGraphicsRoot32BitConstants(0, rhi::kRootConstantCount, &constants, 0);
     commandList->DrawInstanced(6, 1, 0, 0);
 
-    // レイヤー。頂点はフレームのアップロードリングへ書く（メッシュは小さい）。
+    // レイヤーと重ね描き。頂点はフレームのアップロードリングへ書く（メッシュは小さい）。
     commandList->SetPipelineState(layerPipeline);
+    const auto drawLayer = [&](const mesh::AssetLayer& layer, const DrawConstants& layerConstants, const SceneParams& layerParams) {
+        const size_t vertexCount = layer.mesh.vertices.size(), indexCount = layer.mesh.indices.size();
+        if (vertexCount == 0 || indexCount == 0) return true;
+        const rhi::UploadAllocation vertices = m_device->Upload().Allocate(vertexCount * sizeof(LayerVertex), 16);
+        const rhi::UploadAllocation indices = m_device->Upload().Allocate(indexCount * sizeof(uint32_t), 16);
+        const rhi::UploadAllocation layerBuffer = uploadParams(layerParams);
+        if (!vertices.IsValid() || !indices.IsValid() || !layerBuffer.IsValid()) return false;
+        LayerVertex* out = static_cast<LayerVertex*>(vertices.cpu);
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const mesh::MeshVertex& vertex = layer.mesh.vertices[i];
+            const mesh::Point2 tangent = (i < layer.tangents.size()) ? layer.tangents[i] : mesh::Point2{1.0f, 0.0f};
+            out[i] = {{vertex.position.x, 0.0f, vertex.position.y}, {vertex.uv.x, vertex.uv.y}, {tangent.x, 0.0f, tangent.y}, vertex.alpha};
+        }
+        std::memcpy(indices.cpu, layer.mesh.indices.data(), indexCount * sizeof(uint32_t));
+
+        D3D12_VERTEX_BUFFER_VIEW vertexView = {};
+        vertexView.BufferLocation = vertices.gpuAddress;
+        vertexView.SizeInBytes = static_cast<UINT>(vertexCount * sizeof(LayerVertex));
+        vertexView.StrideInBytes = sizeof(LayerVertex);
+        D3D12_INDEX_BUFFER_VIEW indexView = {};
+        indexView.BufferLocation = indices.gpuAddress;
+        indexView.SizeInBytes = static_cast<UINT>(indexCount * sizeof(uint32_t));
+        indexView.Format = DXGI_FORMAT_R32_UINT;
+        commandList->IASetVertexBuffers(0, 1, &vertexView);
+        commandList->IASetIndexBuffer(&indexView);
+        commandList->SetGraphicsRootConstantBufferView(1, layerBuffer.gpuAddress);
+        commandList->SetGraphicsRoot32BitConstants(0, rhi::kRootConstantCount, &layerConstants, 0);
+        commandList->DrawIndexedInstanced(static_cast<UINT>(indexCount), 1, 0, 0, 0);
+        return true;
+    };
+    const auto storeLayout = [](SceneParams& target, const graph::MaterialLayout& layout, graph::TextureSize size) {
+        StoreRect(target.regionEdge, layout.edge);
+        StoreRect(target.regionOuter, layout.outerCorner);
+        StoreRect(target.regionInner, layout.innerCorner);
+        StoreRect(target.regionStart, layout.startCap);
+        StoreRect(target.regionEnd, layout.endCap);
+        target.textureSize[0] = static_cast<float>(size.width);
+        target.textureSize[1] = static_cast<float>(size.height);
+    };
+    bool uploaded = true;
     if (scene.asset != nullptr) {
         for (const mesh::AssetLayer& layer : scene.asset->layers) {
-            const size_t vertexCount = layer.mesh.vertices.size(), indexCount = layer.mesh.indices.size();
-            if (vertexCount == 0 || indexCount == 0) continue;
-            const rhi::UploadAllocation vertices = m_device->Upload().Allocate(vertexCount * sizeof(LayerVertex), 16);
-            const rhi::UploadAllocation indices = m_device->Upload().Allocate(indexCount * sizeof(uint32_t), 16);
-            if (!vertices.IsValid() || !indices.IsValid()) break;
-            LayerVertex* out = static_cast<LayerVertex*>(static_cast<void*>(vertices.cpu));
-            for (size_t i = 0; i < vertexCount; ++i) {
-                const mesh::MeshVertex& vertex = layer.mesh.vertices[i];
-                const mesh::Point2 tangent = (i < layer.tangents.size()) ? layer.tangents[i] : mesh::Point2{1.0f, 0.0f};
-                out[i] = {{vertex.position.x, 0.0f, vertex.position.y}, {vertex.uv.x, vertex.uv.y}, {tangent.x, 0.0f, tangent.y}, vertex.alpha};
-            }
-            std::memcpy(indices.cpu, layer.mesh.indices.data(), indexCount * sizeof(uint32_t));
-
             DrawConstants layerConstants = {};
             layerConstants.flags = commonFlags;
             SceneParams layerParams = params;
@@ -278,32 +293,21 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
                                                [&](const AssetPreviewMaterial& m) { return m.id == layer.materialId; });
             if (material != scene.materials.end()) {
                 StoreBinding(layerConstants, material->binding);
-                StoreRect(layerParams.regionEdge, material->layout.edge);
-                StoreRect(layerParams.regionOuter, material->layout.outerCorner);
-                StoreRect(layerParams.regionInner, material->layout.innerCorner);
-                StoreRect(layerParams.regionStart, material->layout.startCap);
-                StoreRect(layerParams.regionEnd, material->layout.endCap);
-                layerParams.textureSize[0] = static_cast<float>(material->size.width);
-                layerParams.textureSize[1] = static_cast<float>(material->size.height);
+                storeLayout(layerParams, material->layout, material->size);
             }
-            const rhi::UploadAllocation layerBuffer = uploadParams(layerParams);
-            if (!layerBuffer.IsValid()) break;
-
-            D3D12_VERTEX_BUFFER_VIEW vertexView = {};
-            vertexView.BufferLocation = vertices.gpuAddress;
-            vertexView.SizeInBytes = static_cast<UINT>(vertexCount * sizeof(LayerVertex));
-            vertexView.StrideInBytes = sizeof(LayerVertex);
-            D3D12_INDEX_BUFFER_VIEW indexView = {};
-            indexView.BufferLocation = indices.gpuAddress;
-            indexView.SizeInBytes = static_cast<UINT>(indexCount * sizeof(uint32_t));
-            indexView.Format = DXGI_FORMAT_R32_UINT;
-            commandList->IASetVertexBuffers(0, 1, &vertexView);
-            commandList->IASetIndexBuffer(&indexView);
-            commandList->SetGraphicsRootConstantBufferView(1, layerBuffer.gpuAddress);
-            commandList->SetGraphicsRoot32BitConstants(0, rhi::kRootConstantCount, &layerConstants, 0);
-            commandList->DrawIndexedInstanced(static_cast<UINT>(indexCount), 1, 0, 0, 0);
+            uploaded = uploaded && drawLayer(layer, layerConstants, layerParams);
         }
     }
+    // 重ね描き。マテリアルは使わず、区画の確認用の絵か単色で描く。
+    for (const AssetPreviewOverlay& overlay : scene.overlays) {
+        DrawConstants overlayConstants = {};
+        overlayConstants.flags = commonFlags | (overlay.solid ? kFlagSolid : kFlagChecker);
+        SceneParams overlayParams = params;
+        storeLayout(overlayParams, overlay.layout, graph::TextureSize{1024, 1024});
+        std::memcpy(overlayParams.solidColor, overlay.color, sizeof(overlay.color));
+        uploaded = uploaded && drawLayer(overlay.layer, overlayConstants, overlayParams);
+    }
+    (void)uploaded;
 
     rhi::TransitionIfNeeded(commandList, m_target, kReadState);
     PIXEndEvent(commandList);

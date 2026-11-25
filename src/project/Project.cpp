@@ -121,6 +121,8 @@ bool BuildAsset(const Project& project, mesh::Asset& outAsset, std::vector<std::
         }
         layer.materialId = material->id;
         layer.name = output->name;
+        layer.sourceNode = meshNode->id;
+        layer.sourceOutput = output->node;
         outAsset.layers.push_back(std::move(layer));
     }
     return errors.size() == errorsBefore;
