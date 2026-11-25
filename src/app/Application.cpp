@@ -3,6 +3,7 @@
 #include "core/FileDialog.h"
 #include "core/PathUtf8.h"
 #include "io/GraphJson.h"
+#include "io/ProjectJson.h"
 #include "ui/Localization.h"
 #include "ui/UiStyle.h"
 
@@ -40,6 +41,51 @@ std::vector<FileFilter> GraphFileFilters() {
     return {{L"Surface Graph (*.sgraph)", L"*.sgraph"}};
 }
 
+std::vector<FileFilter> ProjectFileFilters() {
+    return {{L"Surface Graph Project (*.sgproj)", L"*.sgproj"}};
+}
+
+// 開くダイアログは、グラフとプロジェクトの両方を出す。
+std::vector<FileFilter> DocumentFileFilters() {
+    return {{L"Surface Graph (*.sgraph; *.sgproj)", L"*.sgraph;*.sgproj"},
+            {L"Surface Graph (*.sgraph)", L"*.sgraph"},
+            {L"Surface Graph Project (*.sgproj)", L"*.sgproj"}};
+}
+
+bool IsProjectPath(const std::filesystem::path& path) {
+    std::wstring extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::towlower);
+    return extension == std::wstring(L".") + io::kProjectFileExtension;
+}
+
+// ノードの位置を from から to へ写す（同じ ID のノードだけ）。ノードの移動をアンドゥの対象にしないために使う。
+void CopyGraphPositions(const graph::Graph& from, graph::Graph& to) {
+    for (const graph::Node& node : from.nodes) {
+        if (graph::Node* target = to.FindNode(node.id)) {
+            target->pos[0] = node.pos[0];
+            target->pos[1] = node.pos[1];
+        }
+    }
+}
+
+void CopyProjectPositions(const project::Project& from, project::Project& to) {
+    for (const project::Node& node : from.nodes) {
+        for (project::Node& target : to.nodes) {
+            if (target.id != node.id) continue;
+            target.pos[0] = node.pos[0];
+            target.pos[1] = node.pos[1];
+            if (node.kind == project::NodeKind::Mesh && target.kind == project::NodeKind::Mesh) {
+                CopyGraphPositions(node.meshGraph, target.meshGraph);
+            }
+        }
+    }
+    for (const project::Material& material : from.materials) {
+        for (project::Material& target : to.materials) {
+            if (target.id == material.id) CopyGraphPositions(material.graph, target.graph);
+        }
+    }
+}
+
 std::filesystem::path AppDataDirectory() {
     wchar_t* localAppData = nullptr;
     size_t length = 0;
@@ -52,6 +98,25 @@ std::filesystem::path AppDataDirectory() {
 }
 
 }  // namespace
+
+graph::Graph MakeDefaultMaterialGraph() {
+    graph::Graph graph;
+    const uint64_t noise = graph.AddNode("noise.perlin", 0.0f, 0.0f)->id;
+    const uint64_t levels = graph.AddNode("adjust.levels", 300.0f, 0.0f)->id;
+    const uint64_t outputId = graph.AddNode(graph::kMaterialNodeType, 600.0f, 0.0f)->id;
+    graph.AddLink(noise, 0, levels, 0);
+    graph.AddLink(levels, 0, outputId, static_cast<int>(graph::MaterialChannel::Albedo));
+    return graph;
+}
+
+uint32_t InteractiveResolution(const graph::Graph& graph) {
+    graph::TextureSize size = graph::GraphSize(graph);
+    for (int i = 0; i < 2 && std::max(size.width, size.height) / 2 >= 256u && std::min(size.width, size.height) / 2 >= 16u; ++i) {
+        size.width /= 2;
+        size.height /= 2;
+    }
+    return std::min(size.width, size.height);
+}
 
 bool Application::Initialize(const StartupOptions& options) {
     m_options = options;
@@ -74,6 +139,10 @@ bool Application::Initialize(const StartupOptions& options) {
     if (!m_pipelineCache.Create(m_device.GetDevice(), &m_shaderCompiler)) return false;
     if (!m_evaluator.Create(m_device, m_pipelineCache, m_shaderCompiler)) return false;
     if (!m_preview.Create(m_device, m_pipelineCache)) return false;
+    if (!m_assetPreview.Create(m_device, m_pipelineCache)) return false;
+    // アセットは、真上寄りから（X が右、Z が手前）見るところから始める。
+    m_assetViewSettings.yaw = 0.0f;
+    m_assetViewSettings.pitch = 0.95f;
     if (!m_imgui.Initialize(m_window, m_device)) return false;
 
     for (rhi::DescriptorHandle& handle : m_channelViews) handle = m_device.SrvHeap().Allocate();
@@ -83,7 +152,7 @@ bool Application::Initialize(const StartupOptions& options) {
     });
     m_window.SetResizeCallback([this](uint32_t width, uint32_t height) { m_device.Resize(width, height); });
     m_window.SetDropCallback([this](const std::vector<std::filesystem::path>& paths) {
-        if (!paths.empty() && paths.front().extension() == L".sgraph") {
+        if (!paths.empty() && (paths.front().extension() == L".sgraph" || IsProjectPath(paths.front()))) {
             m_pendingOpenPath = paths.front();
             m_pendingAction = PendingAction::Open;
         }
@@ -96,7 +165,7 @@ bool Application::Initialize(const StartupOptions& options) {
     if (options.showLightGizmo) m_lightGizmoUntil = 1.0e12;
     if (options.showSettings) m_showSettings = true;
     if (options.showConfirm) m_openConfirm = true;
-    if (options.uvChecker) m_previewSettings.uvChecker = true;
+    if (options.uvChecker) m_previewSettings.uvChecker = m_assetViewSettings.uvChecker = true;
     if (options.viewGrid) m_viewGrid = true;
     if (options.viewTiling) m_viewTiling = true;
     if (options.arrange) m_arrangeCountdown = 4;  // ノードを 1 度描いて、大きさが決まってから
@@ -105,9 +174,21 @@ bool Application::Initialize(const StartupOptions& options) {
     ApplyUiScale();
     LoadRecentFiles();
     CreateGraphEditor();
-    NewDocument();
+    // 起動したときは、新しいプロジェクトから始める（ユーザー指定 2026-11-25）。単体のグラフは「ファイル > 新規グラフ」。
+    NewProject();
     if (!options.graphPath.empty()) OpenDocument(options.graphPath);
-    if (options.selectNode != 0 && m_graph.FindNode(options.selectNode) != nullptr) {
+    // --enter-node: プロジェクトのメッシュノードかマテリアルノードの中に入ってから撮る。
+    if (InProject() && options.enterNode != 0) {
+        if (const project::Node* node = m_project.FindNode(options.enterNode)) {
+            if (node->kind == project::NodeKind::Mesh) RequestEnter(Level::Mesh, node->id);
+            if (node->kind == project::NodeKind::Material) RequestEnter(Level::Material, node->material);
+            ApplyNavigation();
+        }
+    }
+    if (m_level == Level::Project && options.selectNode != 0 && m_project.FindNode(options.selectNode) != nullptr) {
+        m_projectSelected = options.selectNode;
+        m_projectSelectPending = true;
+    } else if (options.selectNode != 0 && m_graph.FindNode(options.selectNode) != nullptr) {
         m_selectedNode = options.selectNode;
         m_viewNode = options.selectNode;
         m_selectPending = true;
@@ -128,6 +209,8 @@ void Application::Shutdown() {
         handle = {};
     }
     m_preview.Destroy();
+    m_assetPreview.Destroy();
+    DestroyMaterialEvaluators();
     m_evaluator.Destroy();
     m_imgui.Shutdown();
     m_pipelineCache.Destroy();
@@ -160,12 +243,19 @@ int Application::Run() {
             m_pendingExport = false;
             RunExport();
         }
+        if (m_pendingAssetExport) {
+            m_pendingAssetExport = false;
+            RunAssetExport();
+        }
         if (m_pendingAction == PendingAction::Close) break;
         if (m_pendingHistoryStep != 0) {
             if (m_pendingHistoryStep < 0) Undo();
             else Redo();
             m_pendingHistoryStep = 0;
         }
+        // 階層の移動（グラフの差し替え）と、消えたマテリアルの評価エンジンの片付け。
+        if (m_hasPendingLevel) ApplyNavigation();
+        if (InProject()) PruneMaterialEvaluators();
 
         m_imgui.BeginFrame();
         DrawUi();
@@ -178,21 +268,18 @@ int Application::Run() {
         }
 
         // グラフの評価。UI の描画（ImGui）より前に記録するので、このフレームの結果がそのまま画面に出る。
-        engine::EvaluateRequest request;
-        request.graph = &m_graph;
-        request.budgetMegapixels = Headless() ? 0.0f : kFrameBudgetMegapixels;
-        if (m_interactive) {
-            // 縦横比を保ったまま 1/4 まで下げる。長い辺は 256 を下回らせない。
-            graph::TextureSize size = graph::GraphSize(m_graph);
-            for (int i = 0; i < 2 && std::max(size.width, size.height) / 2 >= 256u && std::min(size.width, size.height) / 2 >= 16u; ++i) {
-                size.width /= 2;
-                size.height /= 2;
+        if (InProject()) {
+            m_evaluationComplete = EvaluateProject(commandList);
+            if (m_view3dVisible && m_view3dWidth > 0 && m_view3dHeight > 0) RenderProjectView(commandList);
+        } else {
+            engine::EvaluateRequest request;
+            request.graph = &m_graph;
+            request.budgetMegapixels = Headless() ? 0.0f : kFrameBudgetMegapixels;
+            if (m_interactive) request.resolution = InteractiveResolution(m_graph);
+            m_evaluationComplete = m_evaluator.Evaluate(commandList, request);
+            if (m_view3dVisible && m_view3dWidth > 0 && m_view3dHeight > 0) {
+                m_preview.Render(commandList, m_graph, m_evaluator, m_previewSettings, m_view3dWidth, m_view3dHeight);
             }
-            request.resolution = std::min(size.width, size.height);
-        }
-        m_evaluationComplete = m_evaluator.Evaluate(commandList, request);
-        if (m_view3dVisible && m_view3dWidth > 0 && m_view3dHeight > 0) {
-            m_preview.Render(commandList, m_graph, m_evaluator, m_previewSettings, m_view3dWidth, m_view3dHeight);
         }
 
         m_device.BindBackBuffer(commandList);
@@ -213,12 +300,15 @@ void Application::PollShaderHotReload() {
     m_device.WaitForGpu();
     m_pipelineCache.InvalidateAll();
     m_evaluator.InvalidateAll();
+    for (auto& [id, evaluator] : m_materialEvaluators) evaluator->InvalidateAll();
     SG_LOG_INFO(ui::Tr("シェーダを読み直しました", "Reloaded shaders"));
 }
 
 // --- UI ---------------------------------------------------------------------
 
 void Application::DrawUi() {
+    // メッシュグラフは CPU で評価する。ノードのエラーと真上からのビューに使うので、描く前に済ませる。
+    if (m_level == Level::Mesh) m_meshEvaluator.Evaluate(m_graph);
     HandleShortcuts();
     DrawMenuBar();
 
@@ -267,15 +357,19 @@ void Application::BuildDefaultLayout(ImGuiID dockspaceId) {
 void Application::DrawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu(ui::Tr("ファイル", "File"))) {
-        if (ImGui::MenuItem(ui::Tr("新規", "New"), "Ctrl+N")) RequestNew();
+        if (ImGui::MenuItem(ui::Tr("新規グラフ", "New Graph"), "Ctrl+N")) RequestNew();
+        if (ImGui::MenuItem(ui::Tr("新規プロジェクト", "New Project"), "Ctrl+Shift+N")) RequestNewProject();
         if (ImGui::MenuItem(ui::Tr("開く...", "Open..."), "Ctrl+O")) RequestOpen();
         DrawRecentMenu();
         ImGui::Separator();
         if (ImGui::MenuItem(ui::Tr("保存", "Save"), "Ctrl+S")) RequestSave(false);
         if (ImGui::MenuItem(ui::Tr("名前を付けて保存...", "Save As..."), "Ctrl+Shift+S")) RequestSave(true);
         ImGui::Separator();
-        if (ImGui::MenuItem(ui::Tr("エクスポート...", "Export..."), "Ctrl+E", false, m_graph.FindMaterialNode() != nullptr)) {
+        if (ImGui::MenuItem(ui::Tr("エクスポート...", "Export..."), "Ctrl+E", false, CanExportMaterial())) {
             m_pendingExport = true;
+        }
+        if (ImGui::MenuItem(ui::Tr("アセットを書き出す...", "Export Asset..."), "Ctrl+Shift+E", false, InProject())) {
+            m_pendingAssetExport = true;
         }
         if (ImGui::BeginMenu(ui::Tr("エクスポートの設定", "Export Settings"))) {
             ImGui::MenuItem(ui::Tr("Opacity を Albedo のアルファに入れる", "Put Opacity into Albedo Alpha"), nullptr,
@@ -289,8 +383,10 @@ void Application::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu(ui::Tr("編集", "Edit"))) {
-        if (ImGui::MenuItem(ui::Tr("元に戻す", "Undo"), "Ctrl+Z", false, !m_undoStack.empty())) m_pendingHistoryStep = -1;
-        if (ImGui::MenuItem(ui::Tr("やり直す", "Redo"), "Ctrl+Y", false, !m_redoStack.empty())) m_pendingHistoryStep = 1;
+        const bool canUndo = InProject() ? !m_projectUndo.empty() : !m_undoStack.empty();
+        const bool canRedo = InProject() ? !m_projectRedo.empty() : !m_redoStack.empty();
+        if (ImGui::MenuItem(ui::Tr("元に戻す", "Undo"), "Ctrl+Z", false, canUndo)) m_pendingHistoryStep = -1;
+        if (ImGui::MenuItem(ui::Tr("やり直す", "Redo"), "Ctrl+Y", false, canRedo)) m_pendingHistoryStep = 1;
         ImGui::Separator();
         ImGui::TextDisabled("%s", ui::Tr("ノード・リンク・パラメータの変更が対象（ノードの移動は含まない）",
                                          "Covers node, link and parameter edits (not node moves)"));
@@ -311,16 +407,21 @@ void Application::DrawStatusBar() {
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar;
     if (ImGui::BeginViewportSideBar("##statusBar", viewport, ImGuiDir_Down, ImGui::GetFrameHeight(), flags)) {
         if (ImGui::BeginMenuBar()) {
-            const graph::TextureSize graphSize = graph::GraphSize(m_graph);
-            ImGui::Text("%u x %u", graphSize.width, graphSize.height);
-            ImGui::TextDisabled("|");
-            ImGui::Text(ui::Tr("ノード %zu", "%zu nodes"), m_graph.nodes.size());
+            // 大きさはテクスチャを作るグラフ（単体のグラフとマテリアル）にだけある。
+            if (m_level == Level::Graph || m_level == Level::Material) {
+                const graph::TextureSize graphSize = graph::GraphSize(m_graph);
+                ImGui::Text("%u x %u", graphSize.width, graphSize.height);
+                ImGui::TextDisabled("|");
+            }
+            ImGui::Text(ui::Tr("ノード %zu", "%zu nodes"), (m_level == Level::Project) ? m_project.nodes.size() : m_graph.nodes.size());
             ImGui::TextDisabled("|");
             const rhi::Device::VideoMemory memory = m_device.QueryVideoMemory();
             ImGui::Text("VRAM %.0f MB", static_cast<double>(memory.usage) / (1024.0 * 1024.0));
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+                uint64_t textureBytes = m_evaluator.TextureBytes();
+                for (const auto& [id, evaluator] : m_materialEvaluators) textureBytes += evaluator->TextureBytes();
                 ImGui::SetTooltip(ui::Tr("ノードのテクスチャ: %.0f MB", "Node textures: %.0f MB"),
-                                  static_cast<double>(m_evaluator.TextureBytes()) / (1024.0 * 1024.0));
+                                  static_cast<double>(textureBytes) / (1024.0 * 1024.0));
             }
             if (m_device.GpuFrameMilliseconds() >= 0.0) {
                 ImGui::TextDisabled("|");
@@ -374,10 +475,16 @@ void Application::HandleShortcuts() {
     const ImGuiIO& io = ImGui::GetIO();
     // 文字入力中は、入力欄自身の Ctrl+Z などに任せる。
     if (io.WantTextInput || !io.KeyCtrl) return;
-    if (ImGui::IsKeyPressed(ImGuiKey_N, false)) RequestNew();
+    if (ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+        if (io.KeyShift) RequestNewProject();
+        else RequestNew();
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_O, false)) RequestOpen();
     if (ImGui::IsKeyPressed(ImGuiKey_S, false)) RequestSave(io.KeyShift);
-    if (ImGui::IsKeyPressed(ImGuiKey_E, false) && m_graph.FindMaterialNode() != nullptr) m_pendingExport = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        if (io.KeyShift && InProject()) m_pendingAssetExport = true;
+        else if (!io.KeyShift && CanExportMaterial()) m_pendingExport = true;
+    }
     if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) m_pendingHistoryStep = io.KeyShift ? 1 : -1;
     if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) m_pendingHistoryStep = 1;
 }
@@ -386,6 +493,32 @@ void Application::HandleShortcuts() {
 
 void Application::CommitEdits() {
     const ImGuiID active = ImGui::GetActiveID();
+    if (InProject()) {
+        // 開いているグラフの変更をプロジェクトへ書き戻してから、プロジェクト全体で比べる。
+        SyncGraphToProject();
+        m_committed = m_graph;
+        // ノードの移動はアンドゥの対象にしない（整列だけは 1 手として積む）。
+        if (!m_arrangedThisFrame) CopyProjectPositions(m_project, m_projectCommitted);
+        m_arrangedThisFrame = false;
+        if (!(m_project == m_projectCommitted)) {
+            const bool joins = (active != 0 && active == m_lastEditId && !m_projectUndo.empty());
+            if (!joins) {
+                m_projectUndo.push_back(std::move(m_projectCommitted));
+                if (m_projectUndo.size() > kMaxUndoDepth) m_projectUndo.pop_front();
+            }
+            m_projectRedo.clear();
+            m_projectCommitted = m_project;
+            m_lastEditId = active;
+            m_assetDirty = true;
+            if (active != 0) m_interactive = true;
+            UpdateWindowTitle();
+        }
+        if (active == 0) {
+            m_lastEditId = 0;
+            m_interactive = false;
+        }
+        return;
+    }
     if (!(m_graph == m_committed)) {
         // 同じ部品を掴み続けている間（スライダーのドラッグ）は 1 手にまとめる。
         const bool joins = (active != 0 && active == m_lastEditId && !m_undoStack.empty());
@@ -407,6 +540,17 @@ void Application::CommitEdits() {
 }
 
 void Application::Undo() {
+    if (InProject()) {
+        if (m_projectUndo.empty()) return;
+        m_projectRedo.push_back(std::move(m_project));
+        m_project = std::move(m_projectUndo.back());
+        m_projectUndo.pop_back();
+        m_projectCommitted = m_project;
+        m_assetDirty = true;
+        LoadLevelGraph();
+        UpdateWindowTitle();
+        return;
+    }
     if (m_undoStack.empty()) return;
     // 3D ビューの形はアンドゥの対象にしない（いまの形を持ち越す）。
     const int previewShape = m_graph.previewShape;
@@ -420,6 +564,17 @@ void Application::Undo() {
 }
 
 void Application::Redo() {
+    if (InProject()) {
+        if (m_projectRedo.empty()) return;
+        m_projectUndo.push_back(std::move(m_project));
+        m_project = std::move(m_projectRedo.back());
+        m_projectRedo.pop_back();
+        m_projectCommitted = m_project;
+        m_assetDirty = true;
+        LoadLevelGraph();
+        UpdateWindowTitle();
+        return;
+    }
     if (m_redoStack.empty()) return;
     const int previewShape = m_graph.previewShape;
     m_undoStack.push_back(std::move(m_graph));
@@ -439,6 +594,15 @@ void Application::RequestNew() {
         m_openConfirm = true;
     } else {
         m_pendingAction = PendingAction::New;
+    }
+}
+
+void Application::RequestNewProject() {
+    if (Modified()) {
+        m_confirmAction = PendingAction::NewProject;
+        m_openConfirm = true;
+    } else {
+        m_pendingAction = PendingAction::NewProject;
     }
 }
 
@@ -466,8 +630,10 @@ void Application::RequestOpenPath(const std::filesystem::path& path) {
 void Application::RequestSave(bool saveAs) {
     std::filesystem::path path = m_documentPath;
     if (saveAs || path.empty()) {
-        path = ShowSaveFileDialog(ui::Tr(L"グラフを保存", L"Save Graph"), GraphFileFilters(), io::kGraphFileExtension,
-                                  m_documentPath);
+        path = InProject() ? ShowSaveFileDialog(ui::Tr(L"プロジェクトを保存", L"Save Project"), ProjectFileFilters(),
+                                                io::kProjectFileExtension, m_documentPath)
+                           : ShowSaveFileDialog(ui::Tr(L"グラフを保存", L"Save Graph"), GraphFileFilters(), io::kGraphFileExtension,
+                                                m_documentPath);
         if (path.empty()) return;
     }
     SaveDocument(path);
@@ -480,16 +646,18 @@ void Application::RunExport() {
     if (directory.empty()) return;
     m_exportDirectory = directory;
 
-    // ファイル名の頭は、保存済みならファイル名、まだならグラフの名前。
+    // ファイル名の頭は、保存済みならファイル名、まだならグラフの名前。プロジェクトの中ではマテリアルの名前。
     std::string name = m_graph.name;
-    if (!m_documentPath.empty()) {
+    if (const project::Material* material = (m_level == Level::Material) ? m_project.FindMaterial(m_levelId) : nullptr) {
+        name = material->name;
+    } else if (!m_documentPath.empty()) {
         const std::u8string stem = m_documentPath.stem().u8string();
         name.assign(stem.begin(), stem.end());
     }
     // フレームの外なので、GPU を待ってからフル解像度で評価して読み戻す。
     m_device.WaitForGpu();
     engine::ExportResult result;
-    if (engine::ExportMaterial(m_device, m_evaluator, m_graph, directory, name, m_exportOptions, result)) {
+    if (engine::ExportMaterial(m_device, ActiveEvaluator(), m_graph, directory, name, m_exportOptions, result)) {
         SG_LOG_INFO(ui::Tr("%zu 枚を書き出しました: %s", "Exported %zu files: %s"), result.files.size(),
                     ToUtf8Display(directory).c_str());
     } else {
@@ -503,10 +671,12 @@ void Application::RunPendingAction() {
     m_pendingAction = PendingAction::None;
     if (action == PendingAction::New) {
         NewDocument();
+    } else if (action == PendingAction::NewProject) {
+        NewProject();
     } else if (action == PendingAction::Open) {
         std::filesystem::path path = m_pendingOpenPath;
         m_pendingOpenPath.clear();
-        if (path.empty()) path = ShowOpenFileDialog(ui::Tr(L"グラフを開く", L"Open Graph"), GraphFileFilters());
+        if (path.empty()) path = ShowOpenFileDialog(ui::Tr(L"グラフかプロジェクトを開く", L"Open Graph or Project"), DocumentFileFilters());
         if (!path.empty()) OpenDocument(path);
     }
 }
@@ -526,17 +696,31 @@ void Application::ResetDocumentState() {
     m_navigateCountdown = 3;
     m_device.WaitForGpu();
     m_evaluator.Clear();
+    // プロジェクトの状態。単体のグラフでは空のまま。
+    DestroyMaterialEvaluators();
+    m_meshNodeEvaluators.clear();
+    m_meshEvaluator = {};
+    m_projectCommitted = m_project;
+    m_projectSaved = m_project;
+    m_projectUndo.clear();
+    m_projectRedo.clear();
+    m_asset = {};
+    m_assetErrors.clear();
+    m_assetDirty = true;
+    m_hasPendingLevel = false;
+    m_levelId = 0;
+    m_projectSelected = 0;
+    m_projectPlaceAll = true;
+    m_projectNavigateCountdown = 3;
     UpdateWindowTitle();
 }
 
 void Application::NewDocument() {
     // 空ではなく、最小のグラフ（Perlin → Levels → Material Output）から始める。
-    m_graph = graph::Graph{};
-    const uint64_t noise = m_graph.AddNode("noise.perlin", 0.0f, 0.0f)->id;
-    const uint64_t levels = m_graph.AddNode("adjust.levels", 300.0f, 0.0f)->id;
-    const uint64_t outputId = m_graph.AddNode(graph::kMaterialNodeType, 600.0f, 0.0f)->id;
-    m_graph.AddLink(noise, 0, levels, 0);
-    m_graph.AddLink(levels, 0, outputId, static_cast<int>(graph::MaterialChannel::Albedo));
+    m_level = Level::Graph;
+    m_project = {};
+    m_graph = MakeDefaultMaterialGraph();
+    const uint64_t outputId = m_graph.FindMaterialNode()->id;
     m_documentPath.clear();
     // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
     m_evaluator.SetBaseDirectory(m_documentPath.empty() ? std::filesystem::path() : m_documentPath.parent_path());
@@ -545,6 +729,7 @@ void Application::NewDocument() {
 }
 
 bool Application::OpenDocument(const std::filesystem::path& path) {
+    if (IsProjectPath(path)) return OpenProject(path);
     graph::Graph loaded;
     std::string error;
     std::vector<std::string> warnings;
@@ -556,6 +741,8 @@ bool Application::OpenDocument(const std::filesystem::path& path) {
         return false;
     }
     for (const std::string& warning : warnings) SG_LOG_WARN("%s", warning.c_str());
+    m_level = Level::Graph;
+    m_project = {};
     m_graph = std::move(loaded);
     m_documentPath = path;
     // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
@@ -570,6 +757,7 @@ bool Application::OpenDocument(const std::filesystem::path& path) {
 }
 
 bool Application::SaveDocument(const std::filesystem::path& path) {
+    if (InProject()) return SaveProjectDocument(path);
     if (!io::SaveGraph(path, m_graph)) {
         SG_LOG_ERROR(ui::Tr("グラフを保存できません: %s", "Could not save the graph: %s"), ToUtf8Display(path).c_str());
         return false;

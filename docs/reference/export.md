@@ -1,7 +1,7 @@
 # export — マテリアルの書き出し
 
 作成日時: 2026-11-23 05:30
-更新日時: 2026-11-23 05:30
+更新日時: 2026-11-25 18:05
 
 Material Output に繋いだマップを、画像ファイルとして 1 つのフォルダへ書き出す。
 実装は `src/engine/Export.cpp`（エディタと CLI が同じものを使う）。
@@ -41,6 +41,10 @@ Material Output に繋いだマップを、画像ファイルとして 1 つの�
 | --- | --- | --- | --- |
 | Opacity を Albedo のアルファに入れる | 入 | `--no-alpha` で切る | アルファ抜きの素材として 1 枚で使える |
 | ORM も書き出す | 切 | `--orm` | AO / Roughness / Metalness を 1 枚に詰めたものも書く |
+| 法線を OpenGL の向きで書く | 切 | （`asset` が使う） | Material Output の「法線の形式」が DirectX なら、緑を反転して書く。glTF 用 |
+
+`surfgraph-cli asset` は、ORM つき、Albedo のアルファに Opacity、法線は OpenGL の向きで書き出し、
+同じ画像を `.glb` に埋め込む（[cli.md](cli.md)）。
 
 ## 未対応
 

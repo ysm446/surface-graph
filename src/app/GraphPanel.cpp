@@ -1,5 +1,6 @@
 #include "app/Application.h"
 
+#include "app/GraphPanelShared.h"
 #include "graph/GraphLayout.h"
 #include "io/GraphJson.h"
 #include "ui/Localization.h"
@@ -47,11 +48,13 @@ PinRef DecodePin(ed::PinId id) {
     return pin;
 }
 
-// ピンの型ごとの色（Gray = 灰、Color = 水色、Value = 緑）。グレー基調に合わせて彩度は抑える。
+// ピンの型ごとの色（Gray = 灰、Color = 水色、Value = 緑、Path = 琥珀、Mesh = 藤）。グレー基調に合わせて彩度は抑える。
 ImVec4 PinTypeColor(graph::PinType type) {
     switch (type) {
         case graph::PinType::Color: return {0.45f, 0.78f, 0.95f, 1.0f};
         case graph::PinType::Value: return {0.60f, 0.80f, 0.56f, 1.0f};
+        case graph::PinType::Path:  return {0.88f, 0.72f, 0.42f, 1.0f};
+        case graph::PinType::Mesh:  return {0.76f, 0.64f, 0.88f, 1.0f};
         default:                    return {0.72f, 0.72f, 0.72f, 1.0f};
     }
 }
@@ -67,6 +70,8 @@ ImVec4 CategoryColor(graph::NodeCategory category) {
         case graph::NodeCategory::Blend:   return {0.78f, 0.62f, 0.56f, 1.0f};
         case graph::NodeCategory::Color:   return {0.80f, 0.70f, 0.40f, 1.0f};
         case graph::NodeCategory::Derive:  return {0.52f, 0.74f, 0.74f, 1.0f};
+        case graph::NodeCategory::Path:    return {0.88f, 0.72f, 0.42f, 1.0f};
+        case graph::NodeCategory::Mesh:    return {0.76f, 0.64f, 0.88f, 1.0f};
         default:                           return {0.84f, 0.84f, 0.80f, 1.0f};
     }
 }
@@ -184,21 +189,43 @@ void DrawGraphDots(const ImVec2& screenMin, const ImVec2& screenMax) {
 
 }  // namespace
 
+// プロジェクトのグラフ（ProjectPanel.cpp）と共用する部品。
+namespace graphui {
+
+uint64_t PinId(uint64_t node, bool output, int index) { return MakePinId(node, output, index); }
+
+void DecodePinId(uint64_t id, uint64_t& node, bool& output, int& index) {
+    const PinRef pin = DecodePin(ed::PinId(id));
+    node = pin.node;
+    output = pin.output;
+    index = pin.index;
+}
+
+ImVec4 PinColor(graph::PinType type) { return PinTypeColor(type); }
+
+void DrawCanvasDots(const ImVec2& screenMin, const ImVec2& screenMax) { DrawGraphDots(screenMin, screenMax); }
+
+}  // namespace graphui
+
 void Application::CreateGraphEditor() {
     ed::Config config;
     // 表示位置や拡大率をファイルへ保存しない。ノードの位置はグラフモデルが持つ。
     config.SettingsFile = nullptr;
     config.NavigateButtonIndex = 2;
     m_editor = ed::CreateEditor(&config);
+    // プロジェクトのグラフは別のエディタにする（階層を行き来しても、それぞれの表示位置と拡大率が残る）。
+    m_projectEditor = ed::CreateEditor(&config);
 }
 
 void Application::DestroyGraphEditor() {
     if (m_editor != nullptr) ed::DestroyEditor(m_editor);
+    if (m_projectEditor != nullptr) ed::DestroyEditor(m_projectEditor);
     m_editor = nullptr;
+    m_projectEditor = nullptr;
 }
 
 ImTextureID Application::NodeThumbnail(uint64_t node, int output) const {
-    const engine::NodeResult* result = m_evaluator.Result(node);
+    const engine::NodeResult* result = ActiveEvaluator().Result(node);
     if (result == nullptr || !result->error.empty() || output >= static_cast<int>(result->outputs.size())) return ImTextureID{};
     const engine::NodeOutput& item = result->outputs[output];
     if (!item.texture.IsValid() || !item.texture.display.IsValid()) return ImTextureID{};
@@ -307,8 +334,12 @@ void Application::DrawGraphNodeNotes() {
 
 void Application::DrawGraphNode(const graph::Node& node) {
     const graph::NodeDef& def = *node.def;
-    const engine::NodeResult* result = m_evaluator.Result(node.id);
-    const bool hasError = (result != nullptr && !result->error.empty());
+    // メッシュグラフのノードは CPU で評価する。テクスチャを持たないので、サムネイルの代わりに中身の数を出す。
+    const bool meshGraph = (m_graph.kind == graph::GraphKind::Mesh);
+    const mesh::NodeResult* meshResult = meshGraph ? m_meshEvaluator.Find(node.id) : nullptr;
+    const engine::NodeResult* result = meshGraph ? nullptr : ActiveEvaluator().Result(node.id);
+    const bool hasError = meshGraph ? (meshResult != nullptr && !meshResult->error.empty())
+                                    : (result != nullptr && !result->error.empty());
     const bool viewed = (node.id == m_viewNode);
     const float thumbnail = ui::Scaled(ui::kNodeThumbnail);
     // 地は背景より暗い #1A1A1A（彩度なし）。既定の枠は地と同じ色にして見せない（terrain-graph に合わせた）。
@@ -427,6 +458,22 @@ void Application::DrawGraphNode(const graph::Node& node) {
         ImGui::Dummy({width, 0.0f});
     }
 
+    if (meshGraph) {
+        // パスなら頂点の数と開閉、メッシュなら頂点・三角形・ピースの数。補助の情報なので、文字は一回り小さくする。
+        ImGui::Dummy({width, 4.0f});
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.8f);
+        if (meshResult != nullptr && meshResult->path != nullptr) {
+            ImGui::TextDisabled(ui::Tr("%zu 点  %s", "%zu points  %s"), meshResult->path->points.size(),
+                                meshResult->path->closed ? ui::Tr("閉", "closed") : ui::Tr("開", "open"));
+        } else if (meshResult != nullptr && meshResult->mesh != nullptr) {
+            ImGui::TextDisabled(ui::Tr("頂点 %zu  三角形 %zu", "%zu verts  %zu tris"), meshResult->mesh->vertices.size(),
+                                meshResult->mesh->indices.size() / 3);
+            ImGui::TextDisabled(ui::Tr("ピース %zu", "%zu pieces"), meshResult->mesh->pieces.size());
+        } else {
+            ImGui::TextDisabled("%s", hasError ? ui::Tr("エラー", "Error") : "-");
+        }
+        ImGui::PopFont();
+    } else {
     // サムネイル（1 つ目の出力）。ピンの下、中央に置く。
     ImGui::Dummy({width, 6.0f});
     ImGui::SetCursorPosX(rowStartX + (width - thumbnail) * 0.5f);
@@ -443,6 +490,7 @@ void Application::DrawGraphNode(const graph::Node& node) {
         ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.8f);
         ImGui::TextDisabled("%u × %u  %s", nodeSize.width, nodeSize.height, color ? "RGBA16F" : "L16F");
         ImGui::PopFont();
+    }
     }
 
     ImGui::PopID();
@@ -468,7 +516,10 @@ void Application::DrawAddNodePopup() {
 
     // リンクを落として開いたときは、そのピンに繋げるノードだけを出す。
     const bool fromOutput = (m_addNodeLinkNode != 0 && m_addNodeLinkIsOutput);
-    const auto offered = [&](const graph::NodeDef& def) { return !fromOutput || !def.inputs.empty(); };
+    // いま開いているグラフの種類のノードだけを出す。
+    const auto offered = [&](const graph::NodeDef& def) {
+        return def.kind == m_graph.kind && (!fromOutput || !def.inputs.empty());
+    };
 
     const graph::NodeDef* chosen = nullptr;
     const auto item = [&](const graph::NodeDef& def) {
@@ -534,6 +585,13 @@ void Application::DrawGraphPanel() {
         ImGui::End();
         return;
     }
+    // プロジェクトでは、上端にいまの階層（プロジェクト > メッシュ / マテリアル）を出す。
+    if (InProject()) DrawBreadcrumb();
+    if (m_level == Level::Project) {
+        DrawProjectGraph();
+        ImGui::End();
+        return;
+    }
 
     // エディタの中では io.MousePos がキャンバス座標になるので、ホバーは Begin の前に取る。
     const bool canvasHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
@@ -593,7 +651,7 @@ void Application::DrawGraphPanel() {
             } else if (from.node == to.node) {
                 reason = ui::Tr("同じノードには繋げません", "Cannot connect a node to itself");
             } else if (!m_graph.CanLink(from.node, from.index, to.node, to.index)) {
-                reason = ui::Tr("循環になるので繋げません", "This would create a cycle");
+                reason = ui::Tr("繋げません（循環になるか、型が合いません）", "Cannot connect (it would create a cycle, or the types differ)");
             }
             if (reason == nullptr) {
                 if (ed::AcceptNewItem(ImVec4(0.70f, 0.78f, 0.72f, 1.0f), 3.0f)) {
@@ -661,7 +719,12 @@ void Application::DrawGraphPanel() {
 
     // エラーのあるノードに載せたら、理由を出す。
     const uint64_t hoveredNode = static_cast<uint64_t>(ed::GetHoveredNode().Get());
-    const engine::NodeResult* hoveredResult = (hoveredNode != 0) ? m_evaluator.Result(hoveredNode) : nullptr;
+    std::string hoveredError;
+    if (m_graph.kind == graph::GraphKind::Mesh) {
+        if (const mesh::NodeResult* result = m_meshEvaluator.Find(hoveredNode)) hoveredError = result->error;
+    } else if (const engine::NodeResult* result = (hoveredNode != 0) ? ActiveEvaluator().Result(hoveredNode) : nullptr) {
+        hoveredError = result->error;
+    }
 
     bool duplicate = false, remove = false;
     ed::Suspend();
@@ -672,10 +735,10 @@ void Application::DrawGraphPanel() {
         ImGui::TextUnformatted(noted->note.c_str());
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
-    } else if (hoveredResult != nullptr && !hoveredResult->error.empty()) {
+    } else if (!hoveredError.empty()) {
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-        ImGui::TextUnformatted(hoveredResult->error.c_str());
+        ImGui::TextUnformatted(hoveredError.c_str());
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
@@ -774,6 +837,7 @@ void Application::DrawGraphPanel() {
     // 整列だけは別で、起点へ写さずに 1 手として積ませる（まとめて動くので、戻せないと困る）。
     const bool keepUndo = m_keepArrangeUndo;
     m_keepArrangeUndo = false;
+    if (keepUndo) m_arrangedThisFrame = true;
     for (graph::Node& node : m_graph.nodes) {
         const ImVec2 position = ed::GetNodePosition(ed::NodeId(node.id));
         if (position.x == FLT_MAX || position.y == FLT_MAX) continue;

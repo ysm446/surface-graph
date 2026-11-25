@@ -11,14 +11,7 @@ namespace sg::engine {
 
 namespace {
 
-// 読み戻したマップ 1 枚。rgba は幅 × 高さ × 4 の float。
-struct Map {
-    bool connected = false;
-    bool color = false;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    std::vector<float> rgba;
-};
+using Map = MaterialMap;
 
 uint8_t ToByte(float value) {
     if (!(value > 0.0f)) return 0;  // NaN も 0 にする
@@ -43,45 +36,61 @@ float Gray(const Map& map, uint32_t x, uint32_t y, uint32_t width, uint32_t heig
 
 }  // namespace
 
-bool ExportMaterial(rhi::Device& device, Evaluator& evaluator, const graph::Graph& graph,
-                    const std::filesystem::path& directory, const std::string& baseName,
-                    const ExportOptions& options, ExportResult& outResult) {
-    outResult = {};
+bool ReadMaterialMaps(rhi::Device& device, Evaluator& evaluator, const graph::Graph& graph, uint32_t resolution,
+                      MaterialMaps& outMaps, std::string& error) {
+    outMaps = {};
     const graph::Node* material = graph.FindMaterialNode();
     if (material == nullptr) {
-        outResult.error = ui::Tr("Material Output ノードがありません", "There is no Material Output node");
+        error = ui::Tr("Material Output ノードがありません", "There is no Material Output node");
         return false;
     }
+    outMaps.normalDirectX = (material->params[graph::kMaterialParamNormalFormat].i == 0);
 
     EvaluateRequest request;
     request.graph = &graph;
     request.targets = {material->id};
-    request.resolution = options.resolution;
+    request.resolution = resolution;
     if (!evaluator.EvaluateImmediate(request)) {
-        outResult.error = ui::Tr("グラフを評価できません", "The graph could not be evaluated");
+        error = ui::Tr("グラフを評価できません", "The graph could not be evaluated");
         return false;
     }
 
     constexpr int kCount = static_cast<int>(graph::MaterialChannel::Count);
-    Map maps[kCount];
     for (int channel = 0; channel < kCount; ++channel) {
         const graph::Link* link = graph.InputLink(material->id, channel);
         if (link == nullptr) continue;
         NodeResult* upstream = evaluator.Result(link->fromNode);
         if (upstream == nullptr || !upstream->error.empty() || link->fromPin >= static_cast<int>(upstream->outputs.size())) {
-            outResult.error = ui::Tr("エラーのあるノードが繋がっています", "A node with an error is connected");
+            error = ui::Tr("エラーのあるノードが繋がっています", "A node with an error is connected");
             return false;
         }
         NodeOutput& source = upstream->outputs[link->fromPin];
-        Map& map = maps[channel];
+        Map& map = outMaps.maps[channel];
         if (!source.texture.IsValid() || !ReadTexture(device, source.texture.texture, map.rgba)) {
-            outResult.error = ui::Tr("テクスチャを読み戻せません", "Could not read back the texture");
+            error = ui::Tr("テクスチャを読み戻せません", "Could not read back the texture");
             return false;
         }
         map.connected = true;
         map.color = (source.type == graph::PinType::Color);
         map.width = source.texture.texture.width;
         map.height = source.texture.texture.height;
+    }
+    return true;
+}
+
+bool ExportMaterial(rhi::Device& device, Evaluator& evaluator, const graph::Graph& graph,
+                    const std::filesystem::path& directory, const std::string& baseName,
+                    const ExportOptions& options, ExportResult& outResult) {
+    outResult = {};
+    MaterialMaps materialMaps;
+    if (!ReadMaterialMaps(device, evaluator, graph, options.resolution, materialMaps, outResult.error)) return false;
+    Map* maps = materialMaps.maps;
+    // glTF 用に、法線を OpenGL の向きへ揃える（緑を反転する）。
+    if (options.normalOpenGl && materialMaps.normalDirectX) {
+        Map& normalMap = maps[static_cast<int>(graph::MaterialChannel::Normal)];
+        if (normalMap.connected && normalMap.color) {
+            for (size_t i = 1; i < normalMap.rgba.size(); i += 4) normalMap.rgba[i] = 1.0f - normalMap.rgba[i];
+        }
     }
 
     std::error_code ec;

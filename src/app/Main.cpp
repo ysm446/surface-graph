@@ -19,9 +19,9 @@ __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
 namespace {
 
 // 使い方:
-//   surface_graph.exe [<graph.sgraph>] [--open <graph.sgraph>]
+//   surface_graph.exe [<graph.sgraph | project.sgproj>] [--open <graph.sgraph | project.sgproj>]
 //                     [--screenshot-ui <path>] [--screenshot-frame <n>]
-//                     [--select-node <id>] [--preview-shape sphere|plane]
+//                     [--select-node <id>] [--enter-node <id>] [--preview-shape sphere|plane]
 //                     [--language ja|en] [--gpu-validation]
 sg::StartupOptions ParseCommandLine() {
     sg::StartupOptions options;
@@ -39,6 +39,8 @@ sg::StartupOptions ParseCommandLine() {
             options.screenshotFrame = static_cast<uint32_t>(std::clamp(::_wtoi(argv[++i]), 1, 100000));
         } else if (argument == L"--select-node" && i + 1 < argc) {
             options.selectNode = static_cast<uint64_t>(::_wtoi64(argv[++i]));
+        } else if (argument == L"--enter-node" && i + 1 < argc) {
+            options.enterNode = static_cast<uint64_t>(::_wtoi64(argv[++i]));
         } else if (argument == L"--language" && i + 1 < argc) {
             const std::wstring language = argv[++i];
             if (language == L"ja" || language == L"en") options.language = (language == L"en") ? "en" : "ja";

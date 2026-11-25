@@ -38,6 +38,18 @@ const D3D12_INPUT_ELEMENT_DESC kMeshStandardLayout[] = {
      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
 };
 
+// 貼り物のアセットのレイヤー（engine::AssetPreview）。平らなメッシュなので法線は持たない。
+const D3D12_INPUT_ELEMENT_DESC kDecalLayout[] = {
+    {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"COLOR", 0, DXGI_FORMAT_R32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT,
+     D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+};
+
 }  // namespace
 
 std::wstring GraphicsPipelineDesc::MakeKey() const {
@@ -304,6 +316,9 @@ ID3D12PipelineState* PipelineCache::GetGraphics(const GraphicsPipelineDesc& desc
     if (desc.layout == VertexLayout::MeshStandard) {
         psoDesc.InputLayout.pInputElementDescs = kMeshStandardLayout;
         psoDesc.InputLayout.NumElements = _countof(kMeshStandardLayout);
+    } else if (desc.layout == VertexLayout::Decal) {
+        psoDesc.InputLayout.pInputElementDescs = kDecalLayout;
+        psoDesc.InputLayout.NumElements = _countof(kDecalLayout);
     }
 
     // テセレーションを使うときは、IA へパッチとして渡す。

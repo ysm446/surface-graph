@@ -2,10 +2,14 @@
 
 #include "core/Log.h"
 #include "core/Window.h"
+#include "engine/AssetPreview.h"
 #include "engine/Evaluator.h"
 #include "engine/Export.h"
 #include "engine/MaterialPreview.h"
 #include "graph/Graph.h"
+#include "mesh/Asset.h"
+#include "mesh/MeshEvaluator.h"
+#include "project/Project.h"
 #include "rhi/Device.h"
 #include "rhi/PipelineCache.h"
 #include "rhi/ShaderCompiler.h"
@@ -16,7 +20,9 @@
 
 #include <deque>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ax::NodeEditor {
@@ -24,6 +30,11 @@ struct EditorContext;
 }
 
 namespace sg {
+
+// 新しいマテリアルの最小のグラフ（Perlin → Levels → Material Output）。
+graph::Graph MakeDefaultMaterialGraph();
+// スライダー操作中の評価の解像度（短い辺）。縦横比を保ったまま 1/4 まで下げる。長い辺は 256 を下回らせない。
+uint32_t InteractiveResolution(const graph::Graph& graph);
 
 struct StartupOptions {
     std::filesystem::path graphPath;         // --open
@@ -41,10 +52,16 @@ struct StartupOptions {
     bool arrange = false;                    // --arrange（スクリーンショットの確認用。開いたグラフを整列する）
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane|cube（スクリーンショットの確認用）
+    uint64_t enterNode = 0;                  // --enter-node <id>（スクリーンショットの確認用。プロジェクトのノードの中に入る）
 };
 
 // エディタ本体。UI はグラフモデル（m_graph）を編集するだけで、GPU は評価エンジン越しにしか触らない。
 // UI の規約は docs/design/design-guide.md。
+//
+// 文書は 2 種類ある。単体のグラフ（.sgraph）と、プロジェクト（.sgproj。docs/design/decal-asset.md）。
+// プロジェクトは 3 つの階層を行き来する: プロジェクトのグラフ、その中のメッシュグラフ、マテリアルグラフ。
+// **m_graph は「いまグラフのパネルで開いているグラフ」の作業用の写し**で、メッシュ / マテリアルの階層では
+// 毎フレーム m_project へ書き戻す（SyncGraphToProject）。プロジェクトの階層では使わない。
 class Application {
 public:
     bool Initialize(const StartupOptions& options);
@@ -90,21 +107,68 @@ private:
     std::vector<uint64_t> SelectedNodes() const;
     ImTextureID NodeThumbnail(uint64_t node, int output = 0) const;
 
+    // --- プロジェクト（ProjectPanel.cpp） ---
+    // いま開いている階層。Graph は単体のグラフ（プロジェクトではない）。
+    enum class Level { Graph, Project, Mesh, Material };
+    bool InProject() const { return m_level != Level::Graph; }
+    void NewProject();
+    bool OpenProject(const std::filesystem::path& path);
+    bool SaveProjectDocument(const std::filesystem::path& path);
+    // 階層の移動を積む（フレームの先頭で ApplyNavigation が行う）。id は Mesh ならメッシュノード、Material ならマテリアル。
+    void RequestEnter(Level level, uint64_t id);
+    void ApplyNavigation();
+    // m_graph を、いまの階層のグラフ（m_project の中）へ書き戻す。
+    void SyncGraphToProject();
+    // m_graph に、いまの階層のグラフを入れ直す（階層の移動とアンドゥの後）。対象が無くなっていたらプロジェクトの階層へ戻る。
+    void LoadLevelGraph();
+    // いまの階層のマテリアルを評価している評価エンジン（単体のグラフなら m_evaluator）。
+    engine::Evaluator& ActiveEvaluator();
+    const engine::Evaluator& ActiveEvaluator() const;
+    // マテリアルごとの評価エンジン。無ければ作る。
+    engine::Evaluator* MaterialEvaluator(uint64_t materialId);
+    void DestroyMaterialEvaluators();
+    // 表から消えたマテリアルの評価エンジンを捨てる。
+    void PruneMaterialEvaluators();
+    // 画像ファイルの相対パスを辿る起点（いまの階層のグラフのもの）。
+    std::filesystem::path ActiveBaseDirectory() const;
+    // プロジェクトのマテリアルを評価し、アセットを組み立て直す。全部最新なら true。
+    bool EvaluateProject(ID3D12GraphicsCommandList* commandList);
+    // 3D ビューにアセットを描く（いまの階層がマテリアルで、球 / 平面の表示を選んでいればそちら）。
+    void RenderProjectView(ID3D12GraphicsCommandList* commandList);
+    // 3D ビューがアセットの表示か。
+    bool ShowsAssetView() const { return InProject() && (m_level != Level::Material || m_view3dAsset); }
+    void DrawBreadcrumb();
+    void DrawProjectGraph();
+    void DrawProjectNode(const project::Node& node);
+    void DrawProjectAddPopup();
+    void RemoveProjectNode(uint64_t id);
+    void DrawProjectParameters();
+    void DrawProjectSettings();
+    // 2D ビューの代わりに、真上から見たパスとメッシュを描く（プロジェクトとメッシュの階層）。
+    void DrawStructureView();
+    void RunAssetExport();
+    uint64_t AddEmbeddedMaterial(const std::string& name);
+
     // --- 文書 ---
-    enum class PendingAction { None, New, Open, Close };
+    enum class PendingAction { None, New, NewProject, Open, Close };
     void RequestNew();
+    void RequestNewProject();
     void RequestOpen();
     void RequestOpenPath(const std::filesystem::path& path);
     void RequestSave(bool saveAs);
     // マテリアルの書き出し。フォルダを選び、フレームの外（RunPendingAction）で書く。
     void RunExport();
+    // いまの階層のグラフをマテリアルとして書き出せるか（単体のグラフか、マテリアルの階層で、Material Output がある）。
+    bool CanExportMaterial() const {
+        return (m_level == Level::Graph || m_level == Level::Material) && m_graph.FindMaterialNode() != nullptr;
+    }
     void RunPendingAction();
     void NewDocument();
     bool OpenDocument(const std::filesystem::path& path);
     bool SaveDocument(const std::filesystem::path& path);
     void ResetDocumentState();
     void UpdateWindowTitle();
-    bool Modified() const { return !(m_graph == m_saved); }
+    bool Modified() const { return InProject() ? !(m_project == m_projectSaved) : !(m_graph == m_saved); }
 
     // --- 表示スケール ---
     // UI の拡大率。Windows の表示スケールに合わせるか、手で選ぶ。
@@ -160,6 +224,7 @@ private:
     PendingAction m_confirmAction = PendingAction::None;
     bool m_openConfirm = false;
     bool m_pendingExport = false;
+    bool m_pendingAssetExport = false;
     engine::ExportOptions m_exportOptions;
     std::filesystem::path m_exportDirectory;  // 前回の書き出し先（次のダイアログの初期位置）
     std::filesystem::path m_pendingOpenPath;
@@ -173,6 +238,42 @@ private:
     bool m_showSettings = false;
     bool m_showNodeNotes = true;  // ノードの下にメモの先頭を出す（settings.txt に保存）
     uint64_t m_noteHoverNode = 0;  // メモの印か省略した吹き出しに載っているノード（全文をツールチップで出す）
+
+    // プロジェクト。m_projectCommitted はアンドゥの起点、m_projectSaved は最後に保存した内容。
+    // 外部参照のマテリアルのグラフも m_project の中に持つので、アンドゥはプロジェクト全体で 1 本になる。
+    Level m_level = Level::Graph;
+    uint64_t m_levelId = 0;  // Mesh: メッシュノードの ID、Material: マテリアルの ID
+    project::Project m_project;
+    project::Project m_projectCommitted;
+    project::Project m_projectSaved;
+    std::deque<project::Project> m_projectUndo;
+    std::deque<project::Project> m_projectRedo;
+    bool m_hasPendingLevel = false;
+    Level m_pendingLevel = Level::Project;
+    uint64_t m_pendingLevelId = 0;
+    // このフレームのノードの移動は整列によるもの（プロジェクトのアンドゥの起点へ写さない）。
+    bool m_arrangedThisFrame = false;
+    std::unordered_map<uint64_t, std::unique_ptr<engine::Evaluator>> m_materialEvaluators;
+    // メッシュグラフの評価。m_meshEvaluator はいま開いているメッシュグラフ、m_meshNodeEvaluators は
+    // プロジェクトのグラフのメッシュノードごと（出力の名前とエラーを出すため）。
+    mesh::MeshEvaluator m_meshEvaluator;
+    std::unordered_map<uint64_t, mesh::MeshEvaluator> m_meshNodeEvaluators;
+    // 組み立てたアセット。プロジェクトが変わったら作り直す。
+    mesh::Asset m_asset;
+    std::vector<std::string> m_assetErrors;
+    bool m_assetDirty = true;
+    engine::AssetPreview m_assetPreview;
+    engine::PreviewSettings m_assetViewSettings;
+    bool m_view3dAsset = true;  // マテリアルの階層で、アセットに貼った表示にする
+    // プロジェクトのグラフのパネル
+    ax::NodeEditor::EditorContext* m_projectEditor = nullptr;
+    std::vector<uint64_t> m_projectNodesToPlace;
+    bool m_projectPlaceAll = true;
+    int m_projectNavigateCountdown = 0;
+    uint64_t m_projectSelected = 0;
+    bool m_projectSelectPending = false;
+    bool m_openProjectAdd = false;
+    ImVec2 m_projectAddPosition = {0.0f, 0.0f};
 
     // 評価。スライダーを掴んでいる間は低解像度で評価し、離したらフル解像度で評価し直す。
     bool m_interactive = false;

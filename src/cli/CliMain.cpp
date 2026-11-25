@@ -7,14 +7,22 @@
 //   surfgraph-cli check  <graph> [--res N] [--no-seamless] [--no-resolution]
 //   surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]
 //   surfgraph-cli export <graph> --out <dir> [--name NAME] [--res N] [--orm] [--no-alpha]
+//   surfgraph-cli asset  <project> --out <dir> [--res N]
 //   surfgraph-cli nodes [--markdown]
+//
+// render / check / golden / export は、<graph> にプロジェクト（.sgproj）と --material <名前> を渡すと、
+// プロジェクトの中のマテリアルを対象にする。
 
 #include "core/ImageIo.h"
 #include "core/Log.h"
+#include "engine/AssetExport.h"
 #include "engine/Evaluator.h"
 #include "engine/Export.h"
 #include "graph/Graph.h"
 #include "io/GraphJson.h"
+#include "io/ProjectJson.h"
+#include "mesh/AssetRaster.h"
+#include "project/Project.h"
 #include "rhi/Device.h"
 #include "rhi/PipelineCache.h"
 #include "rhi/ShaderCompiler.h"
@@ -55,6 +63,7 @@ struct Options {
     std::string exportName;    // export: ファイル名の頭（省くとグラフの名前）
     bool exportOrm = false;    // export: ORM の 1 枚も書く
     bool exportAlpha = true;   // export: Opacity を Albedo のアルファに詰める
+    std::string materialName;  // プロジェクトの中のマテリアルの名前（UTF-8）
 };
 
 struct Gpu {
@@ -401,11 +410,152 @@ int CommandGolden(Gpu& gpu, const Options& options, const graph::Graph& graph) {
     return (failures == 0) ? 0 : 1;
 }
 
+// --- アセット -----------------------------------------------------------------
+
+// 読み戻したマップを、確認用の絵に貼る形にする（Albedo のアルファに Opacity、法線は OpenGL の向き）。
+mesh::RasterMaterial ToRasterMaterial(uint64_t id, const engine::MaterialMaps& maps) {
+    mesh::RasterMaterial material;
+    material.id = id;
+    const engine::MaterialMap& albedo = maps[graph::MaterialChannel::Albedo];
+    const engine::MaterialMap& opacity = maps[graph::MaterialChannel::Opacity];
+    const engine::MaterialMap& normal = maps[graph::MaterialChannel::Normal];
+    const engine::MaterialMap* base = albedo.connected ? &albedo : opacity.connected ? &opacity : nullptr;
+    if (base != nullptr) {
+        material.albedo.width = base->width;
+        material.albedo.height = base->height;
+        material.albedo.rgba.resize(static_cast<size_t>(base->width) * base->height * 4);
+        for (uint32_t y = 0; y < base->height; ++y) {
+            for (uint32_t x = 0; x < base->width; ++x) {
+                float* out = &material.albedo.rgba[(static_cast<size_t>(y) * base->width + x) * 4];
+                if (albedo.connected) {
+                    const float* p = &albedo.rgba[(static_cast<size_t>(y) * albedo.width + x) * 4];
+                    for (int c = 0; c < 3; ++c) out[c] = albedo.color ? p[c] : p[0];
+                } else {
+                    out[0] = out[1] = out[2] = 0.5f;
+                }
+                out[3] = 1.0f;
+                if (opacity.connected) {
+                    // ノードごとの解像度の倍率で、大きさが違うことがある。
+                    const uint32_t sx = std::min(opacity.width - 1, x * opacity.width / base->width);
+                    const uint32_t sy = std::min(opacity.height - 1, y * opacity.height / base->height);
+                    const float* p = &opacity.rgba[(static_cast<size_t>(sy) * opacity.width + sx) * 4];
+                    out[3] = opacity.color ? 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2] : p[0];
+                }
+            }
+        }
+    }
+    if (normal.connected && normal.color) {
+        material.normal.width = normal.width;
+        material.normal.height = normal.height;
+        material.normal.rgba = normal.rgba;
+        if (maps.normalDirectX) {
+            for (size_t i = 1; i < material.normal.rgba.size(); i += 4) material.normal.rgba[i] = 1.0f - material.normal.rgba[i];
+        }
+    }
+    return material;
+}
+
+// プロジェクトを評価して、.glb とテクスチャ一式、確認用の絵（preview.png / uv.png）を書く。
+int CommandAsset(Gpu& gpu, const Options& options, const project::Project& project, const std::filesystem::path& projectDirectory) {
+    if (options.outDirectory.empty()) {
+        std::printf("--out <dir> が必要です\n");
+        return 2;
+    }
+    mesh::Asset asset;
+    std::vector<std::string> errors;
+    if (!project::BuildAsset(project, asset, errors)) {
+        for (const std::string& error : errors) std::printf("エラー: %s\n", error.c_str());
+        return 1;
+    }
+    if (asset.layers.empty()) {
+        std::printf("エラー: アセットにレイヤーがありません（アセット出力に、メッシュを繋いだマテリアルを繋ぐ）\n");
+        return 1;
+    }
+    // .glb とテクスチャ一式。評価エンジンはノードの ID で結果を持つので、マテリアルを替えるたびにキャッシュを捨てる。
+    const auto evaluatorFor = [&](const project::Material& material) {
+        gpu.evaluator.Clear();
+        gpu.evaluator.SetBaseDirectory(project::MaterialDirectory(material, projectDirectory));
+        return &gpu.evaluator;
+    };
+    engine::AssetExportResult exported;
+    const bool ok = engine::ExportAsset(gpu.device, project, asset, evaluatorFor, options.outDirectory, options.resolution, exported);
+    gpu.device.DrainDebugMessages();
+    for (const std::filesystem::path& path : exported.files) std::printf("  %ls\n", path.filename().c_str());
+    for (const std::string& warning : exported.warnings) std::printf("警告: %s\n", warning.c_str());
+    if (!ok) {
+        std::printf("エラー: %s\n", exported.error.c_str());
+        return 1;
+    }
+
+    // 確認用の絵に貼るマップを読み戻す。
+    std::vector<mesh::RasterMaterial> rasterMaterials;
+    for (const mesh::AssetLayer& layer : asset.layers) {
+        if (std::any_of(rasterMaterials.begin(), rasterMaterials.end(), [&](const mesh::RasterMaterial& m) { return m.id == layer.materialId; })) continue;
+        const project::Material& material = *project.FindMaterial(layer.materialId);
+        engine::MaterialMaps maps;
+        std::string error;
+        if (!engine::ReadMaterialMaps(gpu.device, *evaluatorFor(material), material.graph, options.resolution, maps, error)) {
+            std::printf("エラー: マテリアル「%s」を読み戻せません: %s\n", material.name.c_str(), error.c_str());
+            return 1;
+        }
+        rasterMaterials.push_back(ToRasterMaterial(material.id, maps));
+        rasterMaterials.back().checker = mesh::MakeLayoutChecker(material.graph.layout, graph::GraphSize(material.graph));
+    }
+
+    // 下地は確認用の絵にだけ使い、書き出さない。
+    mesh::RasterMaterial ground;
+    mesh::RasterOptions rasterOptions;
+    if (const project::Material* material = project.FindMaterial(project.ground)) {
+        engine::MaterialMaps maps;
+        std::string error = material->loadError;
+        if (error.empty() && engine::ReadMaterialMaps(gpu.device, *evaluatorFor(*material), material->graph, options.resolution, maps, error)) {
+            ground = ToRasterMaterial(material->id, maps);
+            const graph::TextureSize size = graph::GraphSize(material->graph);
+            const bool wide = size.width >= size.height;
+            const float aspect = wide ? static_cast<float>(size.width) / static_cast<float>(size.height)
+                                      : static_cast<float>(size.height) / static_cast<float>(size.width);
+            rasterOptions.ground = &ground;
+            rasterOptions.groundTileU = wide ? material->tileSize * aspect : material->tileSize;
+            rasterOptions.groundTileV = wide ? material->tileSize : material->tileSize * aspect;
+        } else {
+            std::printf("警告: 下地のマテリアル「%s」を評価できません: %s\n", material->name.c_str(), error.c_str());
+        }
+        gpu.device.DrainDebugMessages();
+    }
+
+    mesh::RasterResult image;
+    if (!mesh::RasterizeAsset(asset, rasterMaterials, rasterOptions, image) ||
+        !SaveRgb8Png(options.outDirectory / "preview.png", image.width, image.height, image.width * 3, image.rgb.data())) {
+        std::printf("エラー: preview.png を書き出せません\n");
+        return 1;
+    }
+    rasterOptions.checker = true;
+    if (!mesh::RasterizeAsset(asset, rasterMaterials, rasterOptions, image) ||
+        !SaveRgb8Png(options.outDirectory / "uv.png", image.width, image.height, image.width * 3, image.rgb.data())) {
+        std::printf("エラー: uv.png を書き出せません\n");
+        return 1;
+    }
+    std::printf("  preview.png\n  uv.png\n");
+
+    std::printf("\nレイヤー（下から）\n");
+    for (size_t i = 0; i < asset.layers.size(); ++i) {
+        const mesh::AssetLayer& layer = asset.layers[i];
+        const project::Material* material = project.FindMaterial(layer.materialId);
+        std::printf("  %zu: %-12s マテリアル「%s」 頂点 %zu  三角形 %zu  ピース %zu\n", i, layer.name.c_str(),
+                    (material != nullptr) ? material->name.c_str() : "?", layer.mesh.vertices.size(), layer.mesh.indices.size() / 3,
+                    layer.mesh.pieces.size());
+    }
+    std::printf("アセットを書き出しました: %ls\n", options.outDirectory.c_str());
+    return 0;
+}
+
 const char* PinTypeName(graph::PinType type) {
     switch (type) {
         case graph::PinType::Gray:  return "Gray";
         case graph::PinType::Color: return "Color";
         case graph::PinType::Value: return "Value";
+        case graph::PinType::Path:  return "Path";
+        case graph::PinType::Mesh:  return "Mesh";
         default:                    return "Auto";
     }
 }
@@ -425,7 +575,11 @@ int CommandNodes(bool markdown) {
         for (const graph::NodeDef& def : graph::AllNodeDefs()) {
             if (def.category != category) continue;
             std::printf("### %s (`%s`)\n\n%s\n\n", def.label.Get(), def.type, def.tooltip.Get());
-            std::printf("- シェーダ: `shaders/%ls`\n", def.shader);
+            if (def.kind == graph::GraphKind::Material) {
+                std::printf("- シェーダ: `shaders/%ls`\n", def.shader);
+            } else {
+                std::printf("- メッシュグラフのノード（CPU で評価する）\n");
+            }
             std::printf("- 入力: ");
             if (def.inputs.empty()) std::printf("なし");
             for (size_t i = 0; i < def.inputs.size(); ++i) {
@@ -473,6 +627,12 @@ int CommandNodes(bool markdown) {
                         case graph::ParamType::File:
                             std::printf("file | （なし） | 画像ファイルのパス");
                             break;
+                        case graph::ParamType::Points:
+                            std::printf("points | %zu 点 | 頂点の並び（メートル）", param.defaultValue.points.size());
+                            break;
+                        case graph::ParamType::Text:
+                            std::printf("text | %s | 文字列", param.defaultValue.text.empty() ? "（なし）" : param.defaultValue.text.c_str());
+                            break;
                     }
                     std::printf(" | %s |\n", param.tooltip.Get());
                 }
@@ -489,7 +649,9 @@ void PrintUsage() {
         "surfgraph-cli check  <graph> [--res N] [--no-seamless] [--no-resolution]\n"
         "surfgraph-cli golden <graph> --dir <dir> [--res N] [--update]\n"
         "surfgraph-cli export <graph> --out <dir> [--name NAME] [--res N] [--orm] [--no-alpha]\n"
-        "surfgraph-cli nodes [--markdown]\n");
+        "surfgraph-cli asset  <project> --out <dir> [--res N]\n"
+        "surfgraph-cli nodes [--markdown]\n"
+        "render / check / golden / export は <project> --material <名前> で、プロジェクトの中のマテリアルも対象にできる\n");
 }
 
 }  // namespace
@@ -525,6 +687,11 @@ int wmain(int argc, wchar_t** argv) {
             const std::wstring name = argv[++i];
             options.exportName.clear();
             for (const wchar_t c : name) options.exportName += (c < 128) ? static_cast<char>(c) : '_';
+        } else if (argument == L"--material" && i + 1 < argc) {
+            const std::wstring name = argv[++i];
+            const int size = ::WideCharToMultiByte(CP_UTF8, 0, name.c_str(), static_cast<int>(name.size()), nullptr, 0, nullptr, nullptr);
+            options.materialName.resize(static_cast<size_t>(std::max(size, 0)));
+            ::WideCharToMultiByte(CP_UTF8, 0, name.c_str(), static_cast<int>(name.size()), options.materialName.data(), size, nullptr, nullptr);
         } else if (argument == L"--no-seamless") {
             options.checkSeamless = false;
         } else if (argument == L"--no-resolution") {
@@ -538,7 +705,9 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     if (options.command == L"nodes") return CommandNodes(options.update);
-    if (options.command != L"render" && options.command != L"check" && options.command != L"golden" && options.command != L"export") {
+    const bool isAsset = (options.command == L"asset");
+    if (!isAsset && options.command != L"render" && options.command != L"check" && options.command != L"golden" &&
+        options.command != L"export") {
         PrintUsage();
         return 2;
     }
@@ -550,11 +719,43 @@ int wmain(int argc, wchar_t** argv) {
     graph::Graph graph;
     std::string error;
     std::vector<std::string> warnings;
-    if (!io::LoadGraph(options.graphPath, graph, error, &warnings)) {
-        std::printf("グラフを読み込めません: %ls (%s)\n", options.graphPath.c_str(), error.c_str());
-        return 1;
+    // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
+    std::filesystem::path baseDirectory = std::filesystem::absolute(options.graphPath).parent_path();
+    std::wstring extension = options.graphPath.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::towlower);
+    const bool isProject = isAsset || extension == std::wstring(L".") + io::kProjectFileExtension;
+    project::Project project;
+    if (isProject) {
+        if (!io::LoadProject(options.graphPath, project, error, &warnings)) {
+            std::printf("プロジェクトを読み込めません: %ls (%s)\n", options.graphPath.c_str(), error.c_str());
+            return 1;
+        }
+        for (const std::string& warning : warnings) std::printf("警告: %s\n", warning.c_str());
+        if (!isAsset) {
+            // プロジェクトの中のマテリアルを、単体のグラフとして扱う。
+            const project::Material* material = nullptr;
+            for (const project::Material& candidate : project.materials) {
+                if (candidate.name == options.materialName) material = &candidate;
+            }
+            if (material == nullptr) {
+                std::printf("--material <名前> でマテリアルを指定してください。このプロジェクトのマテリアル:\n");
+                for (const project::Material& candidate : project.materials) std::printf("  %s\n", candidate.name.c_str());
+                return 2;
+            }
+            if (!material->loadError.empty()) {
+                std::printf("マテリアルを読み込めません: %s\n", material->loadError.c_str());
+                return 1;
+            }
+            graph = material->graph;
+            baseDirectory = project::MaterialDirectory(*material, baseDirectory);
+        }
+    } else {
+        if (!io::LoadGraph(options.graphPath, graph, error, &warnings)) {
+            std::printf("グラフを読み込めません: %ls (%s)\n", options.graphPath.c_str(), error.c_str());
+            return 1;
+        }
+        for (const std::string& warning : warnings) std::printf("警告: %s\n", warning.c_str());
     }
-    for (const std::string& warning : warnings) std::printf("警告: %s\n", warning.c_str());
     if (options.hasSeed) graph.seed = options.seed;
     if (options.width != 0) graph.width = options.width;
     if (options.height != 0) graph.height = options.height;
@@ -565,10 +766,10 @@ int wmain(int argc, wchar_t** argv) {
         gpu.Destroy();
         return 1;
     }
-    // Image ノードの相対パスは、グラフのファイルがあるフォルダから辿る。
-    gpu.evaluator.SetBaseDirectory(std::filesystem::absolute(options.graphPath).parent_path());
+    gpu.evaluator.SetBaseDirectory(baseDirectory);
     int result = 1;
-    if (options.command == L"render") result = CommandRender(gpu, options, graph);
+    if (isAsset) result = CommandAsset(gpu, options, project, baseDirectory);
+    else if (options.command == L"render") result = CommandRender(gpu, options, graph);
     else if (options.command == L"check") result = CommandCheck(gpu, options, graph);
     else if (options.command == L"export") result = CommandExport(gpu, options, graph);
     else result = CommandGolden(gpu, options, graph);

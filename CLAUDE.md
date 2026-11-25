@@ -52,12 +52,14 @@ ctest --test-dir build -C Debug
 | 場所 | 内容 |
 | --- | --- |
 | `src/graph` `src/io` | グラフモデル、ノードのレジストリ、JSON（GPU も UI も使わない） |
+| `src/mesh` | メッシュグラフ（パスからメッシュを作る）、UV の割り付け、`.glb` の書き出し（GPU も UI も使わない） |
+| `src/project` | プロジェクト（メッシュ → マテリアル → アセット出力）と、アセットの組み立て（GPU も UI も使わない） |
 | `src/engine` | 評価エンジン（UI に依存しない） |
 | `src/rhi` `src/core` `src/ui` | DX12 ラッパー、ウィンドウ、UI の部品（terrain-graph から移したもの） |
 | `src/app` | エディタ |
 | `src/cli` | ヘッドレス CLI（`surfgraph-cli`） |
 | `shaders/nodes` | ノードのシェーダ（定義と 1 対 1） |
-| `graphs` | サンプルとテスト用のグラフ、基準画像 |
+| `graphs` | サンプルとテスト用のグラフ、基準画像。`graphs/decal` は貼り物のアセットのサンプル（プロジェクト） |
 
 設計は [docs/design/architecture.md](docs/design/architecture.md)。
 

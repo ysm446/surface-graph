@@ -1,7 +1,7 @@
 # architecture — 全体の設計
 
 作成日時: 2026-11-22 20:28
-更新日時: 2026-11-25 16:21
+更新日時: 2026-11-25 18:30
 
 ## 層の分け方
 
@@ -19,7 +19,9 @@ UI 層            src/app, src/ui      ノードエディタ / パラメータ /
 DX12 ラッパー    src/rhi              デバイス、ディスクリプタヒープ、DXC、PSO
 ```
 
-- `sg_graph`（`src/graph` + `src/io`）は GPU も UI も使わない。単体テストはここだけをリンクする。
+- `sg_graph`（`src/graph` + `src/io` + `src/mesh` + `src/project`）は GPU も UI も使わない。単体テストはここだけをリンクする。
+  `src/mesh` はメッシュグラフ（パスからメッシュを作る）と、UV の割り付け、`.glb` の書き出し。
+  `src/project` はプロジェクト（メッシュ → マテリアル → アセット出力）と、アセットの組み立て（[decal-asset.md](decal-asset.md)）。
 - `sg_engine`（`src/engine` + `src/rhi`）は UI に依存しない。CLI とエディタが同じものを使う。
 - `src/rhi` `src/core` `src/ui` は terrain-graph から移した。名前空間は `sg`、マクロは `SG_`。
 
@@ -27,7 +29,7 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 
 | 要素 | 主なフィールド | 備考 |
 | --- | --- | --- |
-| Graph | `name`, `width`, `height`, `seed`, `nodes`, `links`, `exposedParams`, `nextId` | 幅と高さはそれぞれ 2 のべき（256〜4096）。正方形でなくてよい |
+| Graph | `kind`, `name`, `width`, `height`, `seed`, `layout`, `nodes`, `links`, `exposedParams`, `nextId` | 幅と高さはそれぞれ 2 のべき（256〜4096）。正方形でなくてよい。`kind` はマテリアルかメッシュか、`layout` は貼り物のメッシュ用の区画の配置（評価には関わらない） |
 | Node | `id`, `def`, `pos`, `params`, `seedOffset`, `resolutionShiftX`, `resolutionShiftY` | `def` はレジストリの要素を指す |
 | Link | `id`, `fromNode`, `fromPin`, `toNode`, `toPin` | ピンは番号で持つ。入力ピンには 1 本まで |
 | ParamValue | `f[4]`, `i`, `gradient` | 型ごとに使う場所が決まっている |
@@ -65,6 +67,10 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
   読み直す。相対パスは `Evaluator::SetBaseDirectory`（グラフのファイルがあるフォルダ）から辿る。
 - **エラー**: シェーダのコンパイルに失敗したノードは `NodeResult::error` に DXC のメッセージを持つ。
   エディタは赤い枠とツールチップで出す。
+- **プロジェクト**: マテリアルごとに評価エンジンを 1 つ持つ（結果をノードの ID で持つので、グラフが違えば
+  評価エンジンも分ける）。開いていないマテリアルは Material Output までしか評価しない。
+  アセットの表示は `engine::AssetPreview`（ラスタライズ）で、球 / 平面の表示とシェーディングの式を共有する
+  （[decal-asset.md](decal-asset.md)）。
 
 ## 色の扱い
 
@@ -96,8 +102,9 @@ DX12 ラッパー    src/rhi              デバイス、ディスクリプタ�
 ## ファイル
 
 - グラフの形式: [docs/reference/file-format.md](../reference/file-format.md)
+- プロジェクトの形式: [docs/reference/project-format.md](../reference/project-format.md)
 - マテリアルの出力と 3D ビュー: [material-output.md](material-output.md)
-- デカールアセット（プロジェクト、メッシュグラフ。未実装）: [decal-asset.md](decal-asset.md)
+- デカールアセット（プロジェクト、メッシュグラフ。エディタでの編集と `.glb` の書き出しまで実装済み）: [decal-asset.md](decal-asset.md)
 - シェーダの規約: [shader-conventions.md](shader-conventions.md)
 - ノードの足し方: [adding-nodes.md](adding-nodes.md)
 - UI の規約: [design-guide.md](design-guide.md)

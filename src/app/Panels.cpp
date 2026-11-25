@@ -161,9 +161,9 @@ bool Application::DrawParamRow(graph::Node& node, int paramIndex, const char* la
                 if (!picked.empty()) {
                     // グラフを保存したフォルダの中にあれば、相対パスで覚える（フォルダごと移しても切れない）。
                     std::filesystem::path stored = picked;
-                    if (!m_documentPath.empty()) {
+                    if (const std::filesystem::path base = ActiveBaseDirectory(); !base.empty()) {
                         std::error_code ec;
-                        const std::filesystem::path relative = std::filesystem::relative(picked, m_documentPath.parent_path(), ec);
+                        const std::filesystem::path relative = std::filesystem::relative(picked, base, ec);
                         if (!ec && !relative.empty() && *relative.begin() != "..") stored = relative;
                     }
                     const std::u8string text = stored.generic_u8string();
@@ -181,9 +181,56 @@ bool Application::DrawParamRow(graph::Node& node, int paramIndex, const char* la
             ui::PropertyEnd();
             break;
         }
+        case graph::ParamType::Text: {
+            char buffer[128];
+            std::snprintf(buffer, sizeof(buffer), "%s", value.text.c_str());
+            if (ui::PropertyTextInput(label, buffer, sizeof(buffer), tooltip)) {
+                value.text = buffer;
+                changed = true;
+            }
+            break;
+        }
+        case graph::ParamType::Points: {
+            // 頂点の並び。1 点につき X と Z の 2 行（メートル）。ビュー上での編集はまだ無いので、数値で動かす。
+            std::vector<graph::Point2>& points = value.points;
+            int removeIndex = -1;
+            for (size_t i = 0; i < points.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                char row[48];
+                std::snprintf(row, sizeof(row), "%zu  X", i + 1);
+                changed |= ui::PropertyFloat(row, &points[i].x, -50.0f, 50.0f, points[i].x, tooltip, "%.2f", 0, 0.05f);
+                std::snprintf(row, sizeof(row), "%zu  Z", i + 1);
+                changed |= ui::PropertyFloat(row, &points[i].y, -50.0f, 50.0f, points[i].y, tooltip, "%.2f", 0, 0.05f);
+                if (points.size() > 2) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton(ui::Tr("削除", "Remove"))) removeIndex = static_cast<int>(i);
+                }
+                ImGui::PopID();
+            }
+            if (removeIndex >= 0) {
+                points.erase(points.begin() + removeIndex);
+                changed = true;
+            }
+            ui::PropertyLabelEmpty("##addPoint");
+            if (ui::Button(ui::Tr("頂点を追加", "Add Point"), ui::kWideButtonWidth)) {
+                // 最後の辺をそのまま延ばした先に置く。
+                graph::Point2 next = {1.0f, 0.0f};
+                if (points.size() >= 2) {
+                    const graph::Point2 a = points[points.size() - 2], b = points.back();
+                    next = {b.x + (b.x - a.x), b.y + (b.y - a.y)};
+                } else if (points.size() == 1) {
+                    next = {points.back().x + 1.0f, points.back().y};
+                }
+                points.push_back(next);
+                changed = true;
+            }
+            ui::PropertyEnd();
+            break;
+        }
     }
     // 行の右クリックで「グラフ入力として公開」。
     if (labelOverride == nullptr && def.type != graph::ParamType::Gradient && def.type != graph::ParamType::File &&
+        def.type != graph::ParamType::Points && def.type != graph::ParamType::Text && m_graph.kind == graph::GraphKind::Material &&
         ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         m_paramMenuNode = node.id;
         m_paramMenuIndex = paramIndex;
@@ -213,6 +260,12 @@ void Application::DrawParameterPanel() {
         ImGui::End();
         return;
     }
+    // プロジェクトの階層では、プロジェクトのノード（メッシュ / マテリアル / アセット出力）の設定を出す。
+    if (m_level == Level::Project) {
+        DrawProjectParameters();
+        ImGui::End();
+        return;
+    }
     graph::Node* node = m_graph.FindNode(m_selectedNode);
     if (node == nullptr) {
         ui::HintText("%s", ui::Tr("ノードを選ぶと、ここにパラメータが出ます。", "Select a node to edit its parameters."));
@@ -220,13 +273,20 @@ void Application::DrawParameterPanel() {
         return;
     }
     const graph::NodeDef& def = *node->def;
+    const bool meshGraph = (m_graph.kind == graph::GraphKind::Mesh);
     ImGui::PushID(static_cast<int>(node->id));
 
     ui::SectionHeader(def.label.Get(), def.tooltip.Get());
-    if (const engine::NodeResult* result = m_evaluator.Result(node->id); result != nullptr && !result->error.empty()) {
+    std::string nodeError;
+    if (meshGraph) {
+        if (const mesh::NodeResult* result = m_meshEvaluator.Find(node->id)) nodeError = result->error;
+    } else if (const engine::NodeResult* result = ActiveEvaluator().Result(node->id)) {
+        nodeError = result->error;
+    }
+    if (!nodeError.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, ui::ErrorColor());
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextUnformatted(result->error.c_str());
+        ImGui::TextUnformatted(nodeError.c_str());
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
     }
@@ -251,6 +311,12 @@ void Application::DrawParameterPanel() {
         ui::HintText("%s", ui::Tr("このノードにパラメータはありません。", "This node has no parameters."));
     }
 
+    // シードと解像度の倍率は、テクスチャを作るノードだけが持つ。
+    if (meshGraph) {
+        ImGui::PopID();
+        ImGui::End();
+        return;
+    }
     ui::SectionHeader(ui::Tr("ノード", "Node"));
     if (ui::BeginPropertyTable("NodeRows")) {
         if (def.usesSeed) {
@@ -286,6 +352,18 @@ void Application::DrawGraphSettingsPanel() {
         ImGui::End();
         return;
     }
+    // プロジェクトの階層ではプロジェクトの設定を出す。メッシュグラフには大きさもシードも無い。
+    if (m_level == Level::Project) {
+        DrawProjectSettings();
+        ImGui::End();
+        return;
+    }
+    if (m_level == Level::Mesh) {
+        ui::HintText("%s", ui::Tr("メッシュグラフに設定はありません。", "A mesh graph has no settings."));
+        ImGui::End();
+        return;
+    }
+    const graph::TextureSize sizeBeforeEdit = graph::GraphSize(m_graph);
     ui::SectionHeader(ui::Tr("グラフ", "Graph"));
     if (ui::BeginPropertyTable("GraphRows")) {
         char name[128];
@@ -317,6 +395,40 @@ void Application::DrawGraphSettingsPanel() {
                             ui::Tr("グラフ全体の乱数の種。変えると全ノードの乱数が変わる。",
                                    "Random seed of the whole graph. Changing it changes every random node."))) {
             m_graph.seed = static_cast<uint32_t>(seed);
+        }
+        ui::EndPropertyTable();
+    }
+
+    // 貼り物のメッシュ用の区画の配置。矩形は既定の配置にする（幅と高さを変えたら組み直す）。
+    ui::SectionHeader(ui::Tr("貼り物", "Decal"),
+                      ui::Tr("貼り物のメッシュ（プロジェクト）に貼るときに、テクスチャのどこを使うか。評価には関わらない。",
+                             "Which part of the texture is used when the material is applied to a decal mesh (in a project). "
+                             "It does not affect evaluation."));
+    if (ui::BeginPropertyTable("DecalRows")) {
+        static const ui::LocalizedText kLayoutItems[] = {{"タイル（塗り）", "Tile (fill)"}, {"帯（線）", "Band (stroke)"},
+                                                         {"帯 + 角と端", "Band + corners"}};
+        const auto layoutItems = ui::Tr(kLayoutItems);
+        int layoutKind = static_cast<int>(m_graph.layout.kind);
+        const bool layoutChanged = ui::PropertyCombo(
+            ui::Tr("区画の配置", "Layout"), &layoutKind, layoutItems.data(), static_cast<int>(layoutItems.size()), 0,
+            ui::Tr("タイル: 全体を塗りに使う。帯: 全体を線の辺に使う（U だけ繰り返す）。"
+                   "帯 + 角と端: 上の段が辺、その下に外角 / 内角 / 始端 / 終端のセルが左から並ぶ。",
+                   "Tile: the whole map fills areas. Band: the whole map is the stroke's edge (repeats along U). "
+                   "Band + corners: the top row is the edge; below it are the outer corner, inner corner, start cap and end cap cells."));
+        const graph::MaterialLayout preset = graph::MakeLayout(static_cast<graph::LayoutKind>(layoutKind), graph::GraphSize(m_graph));
+        // 種類を変えたときと、幅か高さを変えたとき（セルを正方形に保つため）に、既定の配置へ組み直す。
+        if (layoutChanged || (m_graph.layout.kind != graph::LayoutKind::Tile && !(graph::GraphSize(m_graph) == sizeBeforeEdit))) {
+            m_graph.layout = preset;
+        }
+        // 1 タイルの実寸は、プロジェクトのマテリアルごとの設定。
+        if (m_level == Level::Material) {
+            for (project::Material& material : m_project.materials) {
+                if (material.id != m_levelId) continue;
+                ui::PropertyFloat(ui::Tr("タイルの実寸", "Tile Size"), &material.tileSize, 0.05f, 20.0f, 1.0f,
+                                  ui::Tr("1 タイルの実寸（メートル。マップの短い辺）。塗りの UV の割り付けに使う。",
+                                         "Real size of one tile in meters (the short side of the map). Used to map fills."),
+                                  "%.2f", 0, 0.05f);
+            }
         }
         ui::EndPropertyTable();
     }
@@ -422,8 +534,14 @@ void Application::DrawView2dPanel() {
         return;
     }
 
+    // プロジェクトとメッシュの階層にはテクスチャが無いので、真上から見たパスとメッシュを出す。
+    if (m_level == Level::Project || m_level == Level::Mesh) {
+        DrawStructureView();
+        ImGui::End();
+        return;
+    }
     const graph::Node* node = m_graph.FindNode(m_viewNode);
-    engine::NodeResult* result = (node != nullptr) ? m_evaluator.Result(node->id) : nullptr;
+    engine::NodeResult* result = (node != nullptr) ? ActiveEvaluator().Result(node->id) : nullptr;
     const int outputCount = (result != nullptr) ? static_cast<int>(result->outputs.size()) : 0;
     m_viewOutput = std::clamp(m_viewOutput, 0, std::max(0, outputCount - 1));
 
@@ -608,7 +726,8 @@ void Application::DrawPreviewLightGizmo(const ImVec2& areaMin, const ImVec2& are
     const ImVec2 size = {areaMax.x - areaMin.x, areaMax.y - areaMin.y};
     if (size.x <= 0.0f || size.y <= 0.0f || fade <= 0.001f) return;
 
-    const engine::PreviewSettings& settings = m_previewSettings;
+    const bool assetView = ShowsAssetView();
+    const engine::PreviewSettings& settings = assetView ? m_assetViewSettings : m_previewSettings;
     const auto cross = [](const GizmoVec3& a, const GizmoVec3& b) {
         return GizmoVec3{a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
     };
@@ -616,7 +735,8 @@ void Application::DrawPreviewLightGizmo(const ImVec2& areaMin, const ImVec2& are
         const float length = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
         return (length > 1e-6f) ? GizmoVec3{v.x / length, v.y / length, v.z / length} : GizmoVec3{0.0f, 1.0f, 0.0f};
     };
-    const float pitch = std::clamp(settings.pitch, -1.5f, 1.5f);
+    // アセットの表示は地面の下へ潜らない（engine::AssetPreview と同じ下限）。
+    const float pitch = std::clamp(settings.pitch, assetView ? 0.03f : -1.5f, 1.5f);
     const float distance = std::clamp(settings.distance, 1.2f, 20.0f);
     const GizmoVec3 offset = {std::cos(pitch) * std::sin(settings.yaw), std::sin(pitch), std::cos(pitch) * std::cos(settings.yaw)};
     const GizmoVec3 forward = normalize({-offset.x, -offset.y, -offset.z});
@@ -731,41 +851,59 @@ void Application::DrawView3dPanel() {
         return;
     }
 
-    engine::PreviewSettings& settings = m_previewSettings;
+    // プロジェクトではアセットを出す。マテリアルの階層だけ、球 / 平面などの形と切り替えられる。
+    const bool assetView = ShowsAssetView();
+    engine::PreviewSettings& settings = assetView ? m_assetViewSettings : m_previewSettings;
     const float pad = ui::Scaled(8.0f);
     // 操作列の上下の余白は同じ幅（margin）にする。下は ItemSpacing に任せず、列の下端から測る。
     const float margin = pad * 0.5f;
     ImGui::SetCursorPos({pad, ImGui::GetCursorPosY() + margin});
     const float toolbarBottom = ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight();
     ImGui::AlignTextToFramePadding();
-    static const ui::LocalizedText kShapes[] = {{"球", "Sphere"}, {"平面", "Plane"}, {"角丸の立方体", "Rounded Cube"}};
-    const auto shapes = ui::Tr(kShapes);
-    ImGui::SetNextItemWidth(ui::TextScaled(130.0f));
-    // 形はグラフに保存する（Graph::previewShape）。アンドゥの起点にも写して、1 手として積まない。
-    settings.shape = m_graph.previewShape;
-    if (ImGui::Combo("##shape", &settings.shape, shapes.data(), static_cast<int>(shapes.size()))) {
-        m_graph.previewShape = settings.shape;
-        m_committed.previewShape = settings.shape;
+    if (m_level == Level::Graph || m_level == Level::Material) {
+        static const ui::LocalizedText kShapes[] = {{"球", "Sphere"}, {"平面", "Plane"}, {"角丸の立方体", "Rounded Cube"}, {"アセット", "Asset"}};
+        const auto shapes = ui::Tr(kShapes);
+        ImGui::SetNextItemWidth(ui::TextScaled(130.0f));
+        // 形はグラフに保存する（Graph::previewShape）。アンドゥの起点にも写して、1 手として積まない。
+        // 「アセット」（プロジェクトの中だけ）は表示の切り替えで、グラフには保存しない。
+        m_previewSettings.shape = m_graph.previewShape;
+        int shape = assetView ? 3 : m_graph.previewShape;
+        if (ImGui::Combo("##shape", &shape, shapes.data(), static_cast<int>(shapes.size()) - (InProject() ? 0 : 1))) {
+            m_view3dAsset = (shape == 3);
+            if (shape < 3) {
+                m_previewSettings.shape = shape;
+                m_graph.previewShape = shape;
+                m_committed.previewShape = shape;
+            }
+        }
+        ImGui::SameLine();
     }
-    ImGui::SameLine();
     if (ImGui::Button(ui::Tr("表示設定", "View Settings"))) ImGui::OpenPopup("##view3dSettings");
     // 「視点を戻す」はボタンではなく F キー（3D ビューに載せて押す。terrain-graph のビューポートと同じキー）。
-    if (m_graph.FindMaterialNode() == nullptr) {
+    if (!assetView && m_graph.FindMaterialNode() == nullptr) {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::WarnColor()), "%s",
                            ui::Tr("Material Output ノードがありません", "No Material Output node"));
+    }
+    // アセットを組み立てられないときは、理由の 1 件目を出す（全部はグラフ設定のパネルに出る）。
+    if (assetView && !m_assetErrors.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::ErrorColor()), "%s", m_assetErrors.front().c_str());
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.5f, pad * 1.5f));
     if (ImGui::BeginPopup("##view3dSettings")) {
         const engine::PreviewSettings defaults;
         if (ui::BeginPropertyTable("View3dRows")) {
-            ui::PropertyFloat(ui::Tr("タイル", "Tiling"), &settings.tiling, 0.5f, 8.0f, defaults.tiling,
-                              ui::Tr("テクスチャを繰り返す数。", "How many times the texture repeats."), "%.2f", 0, 0.5f);
-            ui::PropertyFloat(ui::Tr("視差の高さ", "Parallax Height"), &settings.displacementScale, 0.0f, 0.2f,
-                              defaults.displacementScale,
-                              ui::Tr("Displacement の 1 が、タイル 1 枚の一辺の何倍の高さに当たるか。0 で視差なし。0.5 が基準面。",
-                                     "Height of Displacement value 1 as a fraction of one tile. 0 disables parallax. 0.5 is the base level."));
+            // タイルの数と視差は、球 / 平面の表示だけ（アセットの UV はメッシュが決め、デカールでは視差を使わない）。
+            if (!assetView) {
+                ui::PropertyFloat(ui::Tr("タイル", "Tiling"), &settings.tiling, 0.5f, 8.0f, defaults.tiling,
+                                  ui::Tr("テクスチャを繰り返す数。", "How many times the texture repeats."), "%.2f", 0, 0.5f);
+                ui::PropertyFloat(ui::Tr("視差の高さ", "Parallax Height"), &settings.displacementScale, 0.0f, 0.2f,
+                                  defaults.displacementScale,
+                                  ui::Tr("Displacement の 1 が、タイル 1 枚の一辺の何倍の高さに当たるか。0 で視差なし。0.5 が基準面。",
+                                         "Height of Displacement value 1 as a fraction of one tile. 0 disables parallax. 0.5 is the base level."));
+            }
             ui::PropertyFloat(ui::Tr("露出", "Exposure"), &settings.exposure, 0.1f, 4.0f, defaults.exposure);
             ui::PropertyFloat(ui::Tr("ライトの強さ", "Light Intensity"), &settings.lightIntensity, 0.0f, 10.0f,
                               defaults.lightIntensity);
@@ -779,10 +917,15 @@ void Application::DrawView3dPanel() {
             ui::PropertyBool(ui::Tr("空を表示", "Show Sky"), &settings.showSky, defaults.showSky,
                              ui::Tr("背景に、映り込みに使っている空を出す。", "Shows the sky used for reflections in the background."));
             ui::PropertyBool(ui::Tr("UV チェッカー", "UV Checker"), &settings.uvChecker, defaults.uvChecker,
-                             ui::Tr("Albedo の代わりに確認用の格子の画像を貼る。UV の向きと繰り返しを確かめる。"
-                                    "法線・ラフネスなどグラフのマップは使わない（形状の UV を見るため）。",
-                                    "Shows a checker image instead of Albedo to check the UV direction and tiling. "
-                                    "The graph's maps (normal, roughness...) are not used, to show the shape's UV."));
+                             assetView ? ui::Tr("マテリアルの代わりに、区画の確認用の絵を貼る。灰は塗り、青は辺、橙は外角、赤紫は内角、"
+                                                "緑は始端、黄は終端。u が増える向きへ明るくなり、帯の外側に白い帯が出る。",
+                                                "Shows a layout checker instead of the materials. Gray: fill, blue: edge, orange: outer corner, "
+                                                "magenta: inner corner, green: start cap, yellow: end cap. It brightens along u, with a white "
+                                                "strip on the outer side of the band.")
+                                       : ui::Tr("Albedo の代わりに確認用の格子の画像を貼る。UV の向きと繰り返しを確かめる。"
+                                                "法線・ラフネスなどグラフのマップは使わない（形状の UV を見るため）。",
+                                                "Shows a checker image instead of Albedo to check the UV direction and tiling. "
+                                                "The graph's maps (normal, roughness...) are not used, to show the shape's UV."));
             ui::EndPropertyTable();
         }
         ui::HintText("%s", ui::Tr("3D ビューに載せて F で視点を戻す", "Press F over the 3D view to reset the view"));
@@ -819,7 +962,7 @@ void Application::DrawView3dPanel() {
                 m_lightGizmoUntil = ImGui::GetTime() + kLightGizmoFadeSeconds;
             } else {
                 settings.yaw -= io.MouseDelta.x * 0.01f;
-                settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, -1.5f, 1.5f);
+                settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, assetView ? 0.03f : -1.5f, 1.5f);
             }
         }
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f) {
@@ -829,14 +972,15 @@ void Application::DrawView3dPanel() {
         if (ImGui::IsItemHovered() && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift &&
             ImGui::IsKeyPressed(ImGuiKey_F, false)) {
             const engine::PreviewSettings defaults;
-            settings.yaw = defaults.yaw;
-            settings.pitch = defaults.pitch;
+            // アセットは、真上寄りから（X が右、Z が手前）見る向きへ戻す。
+            settings.yaw = assetView ? 0.0f : defaults.yaw;
+            settings.pitch = assetView ? 0.95f : defaults.pitch;
             settings.distance = defaults.distance;
             settings.panX = 0.0f;
             settings.panY = 0.0f;
         }
         ImDrawList* drawList = ImGui::GetWindowDrawList();
-        const rhi::GpuTexture& texture = m_preview.Texture();
+        const rhi::GpuTexture& texture = assetView ? m_assetPreview.Texture() : m_preview.Texture();
         if (texture.IsValid() && texture.srv.IsValid()) {
             drawList->AddImage(static_cast<ImTextureID>(texture.srv.gpu.ptr), areaMin, areaMax);
         } else {
@@ -857,13 +1001,17 @@ void Application::DrawConfirmDiscard() {
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
     // 左に警告マーク、右に文面を、縦の中央で揃えて並べる。
-    const float iconSize = ImGui::GetFrameHeight() * 1.8f;
+    // マークは文字より少し大きい程度にする（大きいと文面より目立ちすぎる。ユーザー指定 2026-11-25）。
+    const float iconSize = ImGui::GetFrameHeight() * 1.1f;
     ui::WarningIcon(iconSize);
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x * 2.0f);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
     ImGui::BeginGroup();
-    ImGui::Dummy(ImVec2(0.0f, (iconSize - ImGui::GetTextLineHeight()) * 0.5f - ImGui::GetStyle().ItemSpacing.y));
-    ImGui::TextUnformatted(ui::Tr("グラフに保存していない変更があります。保存しますか？",
-                                  "The graph has unsaved changes. Save them?"));
+    // マークが小さいと、文字との差が行間より小さくなる。そのぶんはカーソルをずらして合わせる。
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (iconSize - ImGui::GetTextLineHeight()) * 0.5f);
+    ImGui::TextUnformatted(InProject() ? ui::Tr("プロジェクトに保存していない変更があります。保存しますか？",
+                                                "The project has unsaved changes. Save them?")
+                                       : ui::Tr("グラフに保存していない変更があります。保存しますか？",
+                                                "The graph has unsaved changes. Save them?"));
     ImGui::EndGroup();
     ImGui::Spacing();
     ImGui::Spacing();

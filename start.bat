@@ -7,7 +7,7 @@ rem
 rem   start.bat                 Release を起動する（無ければビルドしてから）
 rem   start.bat debug           Debug を起動する
 rem   start.bat build           ビルドし直してから起動する（debug と併用できる）
-rem   start.bat path\to\a.sgraph   グラフを開いて起動する
+rem   start.bat path\to\a.sgraph   グラフ（.sgraph）かプロジェクト（.sgproj）を開いて起動する
 rem
 rem 上の 3 つ以外の引数は、そのままエディタへ渡す（例: --language en）。
 

@@ -53,7 +53,13 @@ Json ParamToJson(const graph::ParamDef& def, const graph::ParamValue& value) {
         case graph::ParamType::Float2: return Json::array({value.f[0], value.f[1]});
         case graph::ParamType::Color:  return Json::array({value.f[0], value.f[1], value.f[2], value.f[3]});
         case graph::ParamType::Bool:   return value.i != 0;
-        case graph::ParamType::File:   return value.text;
+        case graph::ParamType::File:
+        case graph::ParamType::Text:   return value.text;
+        case graph::ParamType::Points: {
+            Json points = Json::array();
+            for (const graph::Point2& point : value.points) points.push_back(Json::array({point.x, point.y}));
+            return points;
+        }
         case graph::ParamType::Gradient: {
             Json stops = Json::array();
             for (const graph::GradientStop& stop : value.gradient) {
@@ -74,8 +80,19 @@ void ParamFromJson(const graph::ParamDef& def, const Json& json, graph::ParamVal
         case graph::ParamType::Float2: ReadFloats(json, value.f, 2); break;
         case graph::ParamType::Color:  ReadFloats(json, value.f, 4); break;
         case graph::ParamType::File:
+        case graph::ParamType::Text:
             if (json.is_string()) value.text = json.get<std::string>();
             break;
+        case graph::ParamType::Points: {
+            if (!json.is_array()) break;
+            value.points.clear();
+            for (const Json& item : json) {
+                float xy[2] = {0.0f, 0.0f};
+                ReadFloats(item, xy, 2);
+                value.points.push_back({xy[0], xy[1]});
+            }
+            break;
+        }
         case graph::ParamType::Bool:
             if (json.is_boolean()) value.i = json.get<bool>() ? 1 : 0;
             else if (json.is_number()) value.i = (json.get<double>() != 0.0) ? 1 : 0;
@@ -102,6 +119,46 @@ void ParamFromJson(const graph::ParamDef& def, const Json& json, graph::ParamVal
     }
 }
 
+constexpr const char* kLayoutNames[] = {"tile", "band", "band-corners"};
+
+Json RectToJson(const graph::UvRect& rect) { return Json::array({rect.x, rect.y, rect.width, rect.height}); }
+
+void RectFromJson(const Json& json, const char* key, graph::UvRect& rect) {
+    const auto it = json.find(key);
+    if (it == json.end()) return;
+    float values[4] = {rect.x, rect.y, rect.width, rect.height};
+    ReadFloats(*it, values, 4);
+    rect = {values[0], values[1], values[2], values[3]};
+}
+
+Json LayoutToJson(const graph::MaterialLayout& layout) {
+    Json json = {{"kind", kLayoutNames[static_cast<int>(layout.kind)]}};
+    if (!layout.edge.IsEmpty()) json["edge"] = RectToJson(layout.edge);
+    if (!layout.outerCorner.IsEmpty()) json["outerCorner"] = RectToJson(layout.outerCorner);
+    if (!layout.innerCorner.IsEmpty()) json["innerCorner"] = RectToJson(layout.innerCorner);
+    if (!layout.startCap.IsEmpty()) json["startCap"] = RectToJson(layout.startCap);
+    if (!layout.endCap.IsEmpty()) json["endCap"] = RectToJson(layout.endCap);
+    return json;
+}
+
+// "layout": "band" のように種類だけ書いてもよい（矩形は既定の配置になる）。
+graph::MaterialLayout LayoutFromJson(const Json& json, graph::TextureSize size) {
+    const std::string kind = json.is_string() ? json.get<std::string>() : json.is_object() ? StringOr(json, "kind", "tile") : "tile";
+    graph::LayoutKind layoutKind = graph::LayoutKind::Tile;
+    for (int i = 0; i < 3; ++i) {
+        if (kind == kLayoutNames[i]) layoutKind = static_cast<graph::LayoutKind>(i);
+    }
+    graph::MaterialLayout layout = graph::MakeLayout(layoutKind, size);
+    if (json.is_object()) {
+        RectFromJson(json, "edge", layout.edge);
+        RectFromJson(json, "outerCorner", layout.outerCorner);
+        RectFromJson(json, "innerCorner", layout.innerCorner);
+        RectFromJson(json, "startCap", layout.startCap);
+        RectFromJson(json, "endCap", layout.endCap);
+    }
+    return layout;
+}
+
 Json NodeToJson(const graph::Node& node) {
     Json params = Json::object();
     for (size_t i = 0; i < node.def->params.size() && i < node.params.size(); ++i) {
@@ -120,12 +177,12 @@ Json NodeToJson(const graph::Node& node) {
     return json;
 }
 
-// 未知の種類なら false。
-bool NodeFromJson(const Json& json, graph::Node& node, std::string& unknownType) {
+// 未知の種類か、このグラフの種類（kind）のノードでなければ false。
+bool NodeFromJson(const Json& json, graph::GraphKind kind, graph::Node& node, std::string& unknownType) {
     if (!json.is_object()) return false;
     const std::string type = StringOr(json, "type", "");
     node.def = graph::FindNodeDef(type);
-    if (node.def == nullptr) {
+    if (node.def == nullptr || node.def->kind != kind) {
         unknownType = type;
         return false;
     }
@@ -172,7 +229,15 @@ std::string GraphToJson(const graph::Graph& graph) {
         if (node == nullptr || item.param < 0 || item.param >= static_cast<int>(node->def->params.size())) continue;
         exposed.push_back({{"name", item.name}, {"node", item.node}, {"param", node->def->params[item.param].name}});
     }
-    Json root = {{"format", "surface-graph"}, {"version", kGraphFormatVersion}, {"name", graph.name}};
+    Json root = {{"format", "surface-graph"}, {"version", kGraphFormatVersion}};
+    if (graph.kind == graph::GraphKind::Mesh) {
+        // メッシュグラフは、大きさも 3D ビューの形も持たない。
+        root["kind"] = "mesh";
+        root["nodes"] = nodes;
+        root["links"] = links;
+        return root.dump(2);
+    }
+    root["name"] = graph.name;
     // 正方形なら、これまでと同じ "resolution" で書く（古い版でも読める）。
     if (graph.width == graph.height) {
         root["resolution"] = graph.width;
@@ -183,6 +248,8 @@ std::string GraphToJson(const graph::Graph& graph) {
     root["seed"] = graph.seed;
     static const char* const kShapeNames[] = {"sphere", "plane", "cube"};
     root["preview"] = {{"shape", kShapeNames[std::clamp(graph.previewShape, 0, 2)]}};
+    // 既定（tile）なら書かない（これまでのファイルと同じ内容になる）。
+    if (graph.layout != graph::MaterialLayout{}) root["layout"] = LayoutToJson(graph.layout);
     root["nodes"] = nodes;
     root["links"] = links;
     root["exposedParams"] = exposed;
@@ -206,6 +273,7 @@ bool GraphFromJson(const std::string& text, graph::Graph& outGraph, std::string&
     }
 
     graph::Graph graph;
+    if (StringOr(root, "kind", "material") == "mesh") graph.kind = graph::GraphKind::Mesh;
     graph.name = StringOr(root, "name", "untitled");
     const int resolution = IntOr(root, "resolution", 1024);
     graph.width = graph::ClampResolution(static_cast<uint32_t>(std::max(0, IntOr(root, "width", resolution))));
@@ -217,13 +285,16 @@ bool GraphFromJson(const std::string& text, graph::Graph& outGraph, std::string&
         const std::string shape = StringOr(*preview, "shape", "sphere");
         graph.previewShape = (shape == "plane") ? 1 : (shape == "cube") ? 2 : 0;
     }
+    if (const auto layout = root.find("layout"); layout != root.end() && graph.kind == graph::GraphKind::Material) {
+        graph.layout = LayoutFromJson(*layout, graph::GraphSize(graph));
+    }
 
     uint64_t maxId = 0;
     if (const auto nodes = root.find("nodes"); nodes != root.end() && nodes->is_array()) {
         for (const Json& item : *nodes) {
             graph::Node node;
             std::string unknownType;
-            if (!NodeFromJson(item, node, unknownType)) {
+            if (!NodeFromJson(item, graph.kind, node, unknownType)) {
                 if (warnings != nullptr) warnings->push_back("未知のノードを読み飛ばしました: " + unknownType);
                 continue;
             }
@@ -320,7 +391,7 @@ std::vector<uint64_t> PasteNodes(graph::Graph& graph, const std::string& text, f
         for (const Json& item : *nodes) {
             graph::Node node;
             std::string unknownType;
-            if (!NodeFromJson(item, node, unknownType)) continue;
+            if (!NodeFromJson(item, graph.kind, node, unknownType)) continue;
             const uint64_t oldId = node.id;
             node.id = graph.nextId++;
             node.pos[0] += dx;

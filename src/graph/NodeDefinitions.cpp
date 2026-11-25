@@ -3,6 +3,9 @@
 // ノードのレジストリ。ノードを足すときは、ここに定義を 1 つ足し、shaders/nodes/ に同名の HLSL を置く。
 // パラメータ名はそのまま HLSL の変数名になる（宣言は BuildParamLayout が自動生成する）。
 // 手順は docs/design/adding-nodes.md。
+//
+// メッシュグラフのノード（kind = Mesh）は最後にまとめてある。こちらはシェーダを持たず、
+// 処理は src/mesh/MeshEvaluator.cpp が type で選ぶ（docs/design/decal-asset.md）。
 
 namespace sg::graph {
 
@@ -96,6 +99,26 @@ ParamDef File(const char* name, L label, L tooltip = {"", ""}) {
     def.name = name;
     def.label = label;
     def.type = ParamType::File;
+    def.tooltip = tooltip;
+    return def;
+}
+
+ParamDef Points(const char* name, L label, std::vector<Point2> points, L tooltip = {"", ""}) {
+    ParamDef def;
+    def.name = name;
+    def.label = label;
+    def.type = ParamType::Points;
+    def.defaultValue.points = std::move(points);
+    def.tooltip = tooltip;
+    return def;
+}
+
+ParamDef Text(const char* name, L label, const char* text, L tooltip = {"", ""}) {
+    ParamDef def;
+    def.name = name;
+    def.label = label;
+    def.type = ParamType::Text;
+    def.defaultValue.text = text;
     def.tooltip = tooltip;
     return def;
 }
@@ -826,6 +849,108 @@ std::vector<NodeDef> BuildDefs() {
                             "Orientation of the connected normal map. DirectX has green pointing down (Unreal), OpenGL has green pointing up (Unity / glTF). The 3D view reads the map accordingly."})};
         def.tooltip = {"マテリアルの出力。マップの名前は Megascans に合わせてある。繋いだものが 3D ビューに出る。繋いでいない入力は既定値（Albedo 0.5、Roughness 0.5、Metalness 0、AO 1、Opacity 1、法線は平ら）。",
                        "The material output, with maps named after Megascans. Connected maps show in the 3D view. Unconnected inputs use defaults (Albedo 0.5, Roughness 0.5, Metalness 0, AO 1, Opacity 1, flat normal)."};
+        defs.push_back(def);
+    }
+
+    // === メッシュグラフ =====================================================
+    // 座標は XZ 平面、単位はメートル。パラメータの並びは src/mesh/MeshEvaluator.cpp が番号で読むので、
+    // 並べ替えたら向こうも直すこと。
+    const PinDef pathOut = {"Out", {"パス", "Path"}, PinType::Path};
+    const PinDef pathIn = {"Path", {"パス", "Path"}, PinType::Path};
+    const PinDef meshOut = {"Out", {"メッシュ", "Mesh"}, PinType::Mesh};
+
+    // --- パス ---------------------------------------------------------------
+    {
+        NodeDef def;
+        def.type = "path.points";
+        def.label = {"パス", "Path"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Path;
+        def.outputs = {pathOut};
+        def.params = {
+            Points("points", {"頂点", "Points"}, {{-1.0f, 0.0f}, {1.0f, 0.0f}},
+                   {"頂点の並び（メートル）。ビューの上で動かす。", "The points of the path, in meters. Edit them in the view."}),
+            Bool("closed", {"閉じる", "Closed"}, false,
+                 {"入れると、最後の頂点から最初の頂点へ繋ぐ。塗りには閉じたパスが要る。",
+                  "Connects the last point back to the first. Fill needs a closed path."}),
+        };
+        def.tooltip = {"手で置いた頂点を繋いだパス。", "A path through hand-placed points."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
+        def.type = "path.rect";
+        def.label = {"矩形", "Rectangle"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Path;
+        def.outputs = {pathOut};
+        def.params = {
+            Float("width", {"幅", "Width"}, 2.0f, 0.01f, 100.0f, {"X 方向の長さ（メートル）。", "Size along X, in meters."}),
+            Float("height", {"高さ", "Height"}, 1.0f, 0.01f, 100.0f, {"Z 方向の長さ（メートル）。", "Size along Z, in meters."}),
+        };
+        def.tooltip = {"原点を中心にした、閉じた矩形のパス。", "A closed rectangular path centered on the origin."};
+        defs.push_back(def);
+    }
+
+    // --- メッシュ -----------------------------------------------------------
+    {
+        NodeDef def;
+        def.type = "mesh.fill";
+        def.label = {"塗り", "Fill"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {pathIn};
+        def.outputs = {meshOut};
+        def.tooltip = {"閉じたパスの内側を三角形で埋める。凹んだ形も扱える（穴は扱えない）。UV は位置そのもので、"
+                       "マテリアルを繋いだときにタイルの実寸で割り付ける。",
+                       "Fills the inside of a closed path with triangles. Concave shapes work; holes do not. "
+                       "UVs are the positions themselves and get scaled by the tile size when a material is assigned."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
+        def.type = "mesh.stroke";
+        def.label = {"線", "Stroke"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {pathIn};
+        def.outputs = {meshOut};
+        def.params = {
+            Float("width", {"幅", "Width"}, 0.2f, 0.01f, 10.0f, {"帯の幅（メートル）。", "Width of the band, in meters."}),
+            Enum("align", {"寄せ", "Align"}, 1, {{"内側", "Inside"}, {"中央", "Center"}, {"外側", "Outside"}},
+                 {"パスに対して帯をどちらへ寄せるか。閉じたパスでは囲まれた側が内側、開いたパスでは進む向きの左が内側。",
+                  "Which side of the path the band sits on. For a closed path, inside is the enclosed side; for an open path, it is the left of the direction of travel."}),
+            Enum("corner", {"角の処理", "Corners"}, 0, {{"留め継ぎ", "Miter"}, {"丸め", "Round"}, {"角ピース", "Corner Pieces"}},
+                 {"留め継ぎは角で斜めに突き合わせる。丸めは角の外側を扇形に分割する。角ピースは 90° の角を専用のピース"
+                  "（外角 / 内角）にして、辺をそこで区切る（90° でない角は留め継ぎになる）。",
+                  "Miter joins the band diagonally. Round fans the outside of the corner. Corner Pieces turns each 90-degree corner "
+                  "into its own piece (outer / inner) and splits the edges there; other angles are mitered."}),
+            Int("segments", {"丸めの分割数", "Round Segments"}, 4, 1, 16, {"丸めたときの、角 1 つの分割数。", "Segments per corner when rounding."}),
+            Bool("caps", {"端のピース", "End Pieces"}, false,
+                 {"開いたパスの両端を、専用のピース（始端 / 終端）にする。", "Turns both ends of an open path into their own pieces (start / end)."}),
+            Float("overlap", {"重なりの長さ", "Overlap"}, 0.25f, 0.0f, 1.0f,
+                  {"角と端のピースを、辺の上へ延ばして重ねる長さ（帯の幅に対する比）。延ばした先で透明になる。",
+                   "How far corner and end pieces extend over the edges, as a ratio of the band width. They fade out at the far end."}),
+        };
+        def.tooltip = {"パスに沿った帯。u は帯の長さ方向（幅を 1 とする）、v は外側が 0、内側が 1。",
+                       "A band along a path. U runs along the band (in band widths); V is 0 on the outside and 1 on the inside."};
+        defs.push_back(def);
+    }
+    {
+        // 出力ピンはメッシュの写しで、評価結果を取り出すためにだけ持つ（UI には出さない）。
+        NodeDef def;
+        def.type = "mesh.output";
+        def.label = {"メッシュ出力", "Mesh Output"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {{"Mesh", {"メッシュ", "Mesh"}, PinType::Mesh}};
+        def.outputs = {meshOut};
+        def.hideOutputs = true;
+        def.params = {Text("name", {"名前", "Name"}, "Mesh",
+                           {"出力の名前。プロジェクトのグラフで、メッシュノードの出力ピンの名前になる。",
+                            "Name of the output. It becomes the name of an output pin on the mesh node in the project graph."})};
+        def.tooltip = {"メッシュグラフの出力。複数置ける（補修パッチなら、中央と縁の 2 つ）。",
+                       "An output of the mesh graph. A graph can have several (a repair patch has two: center and border)."};
         defs.push_back(def);
     }
 

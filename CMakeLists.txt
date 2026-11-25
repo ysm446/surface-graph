@@ -103,7 +103,7 @@ target_include_directories(sg_common_options INTERFACE
     "${Stb_INCLUDE_DIR}"
 )
 
-# --- グラフモデル（GPU も UI も使わない） ------------------------------------
+# --- グラフモデルとメッシュグラフ（GPU も UI も使わない） ------------------------------------
 add_library(sg_graph STATIC
     src/graph/Graph.cpp
     src/graph/Graph.h
@@ -112,6 +112,21 @@ add_library(sg_graph STATIC
     src/graph/NodeDefinitions.cpp
     src/io/GraphJson.cpp
     src/io/GraphJson.h
+    src/io/ProjectJson.cpp
+    src/io/ProjectJson.h
+    src/mesh/Asset.cpp
+    src/mesh/Asset.h
+    src/mesh/AssetRaster.cpp
+    src/mesh/AssetRaster.h
+    src/mesh/GlbWriter.cpp
+    src/mesh/GlbWriter.h
+    src/mesh/MeshBuilder.cpp
+    src/mesh/MeshBuilder.h
+    src/mesh/MeshEvaluator.cpp
+    src/mesh/MeshEvaluator.h
+    src/mesh/MeshTypes.h
+    src/project/Project.cpp
+    src/project/Project.h
     src/core/Log.cpp
     src/core/Log.h
 )
@@ -119,6 +134,10 @@ target_link_libraries(sg_graph PUBLIC sg_common_options nlohmann_json::nlohmann_
 
 # --- 評価エンジン（DX12 ラッパーを含む。UI に依存しない） ----------------------
 add_library(sg_engine STATIC
+    src/engine/AssetExport.cpp
+    src/engine/AssetExport.h
+    src/engine/AssetPreview.cpp
+    src/engine/AssetPreview.h
     src/engine/Evaluator.cpp
     src/engine/Evaluator.h
     src/engine/Export.cpp
@@ -199,7 +218,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/app/Main.cpp")
         src/app/Application.cpp
         src/app/Application.h
         src/app/GraphPanel.cpp
+        src/app/GraphPanelShared.h
         src/app/Panels.cpp
+        src/app/ProjectPanel.cpp
         src/core/FileDialog.cpp
         src/core/FileDialog.h
         src/core/FrameLimiter.cpp
@@ -241,6 +262,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/TestMain.cpp")
     target_link_libraries(surface_graph_tests PRIVATE sg_graph)
     add_test(NAME unit COMMAND surface_graph_tests)
 endif()
+
+# サンプルのプロジェクトを CLI でアセットにする（メッシュ、UV の割り付け、マテリアルの評価、.glb の書き出しまで通す）。
+file(GLOB sg_sampleProjects CONFIGURE_DEPENDS "graphs/decal/*.sgproj")
+foreach(projectFile ${sg_sampleProjects})
+    get_filename_component(projectName "${projectFile}" NAME_WE)
+    add_test(NAME asset-${projectName}
+        COMMAND surfgraph-cli asset "${projectFile}" --res 256 --out "${CMAKE_BINARY_DIR}/asset-test/${projectName}")
+endforeach()
 
 # GPU を使う検査。テスト用グラフを CLI で評価し、決定論・シームレス・解像度非依存を確かめる。
 file(GLOB sg_testGraphs CONFIGURE_DEPENDS "graphs/tests/*.sgraph")

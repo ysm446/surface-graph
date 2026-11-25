@@ -28,6 +28,7 @@ inline constexpr uint32_t kRootConstantCount = 20;
 enum class VertexLayout {
     None,          // 頂点バッファを使わない（フルスクリーン描画など）
     MeshStandard,  // position / normal / tangent / uv
+    Decal,         // position / uv / tangent / alpha（貼り物のアセットのレイヤー。36 バイト）
 };
 
 struct GraphicsPipelineDesc {

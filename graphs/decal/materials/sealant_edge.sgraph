@@ -1,0 +1,124 @@
+{
+  "format": "surface-graph",
+  "version": 1,
+  "name": "sealant_edge",
+  "resolution": 1024,
+  "seed": 0,
+  "preview": {
+    "shape": "plane"
+  },
+  "layout": "band-corners",
+  "nodes": [
+    {
+      "id": 1,
+      "type": "io.image",
+      "pos": [
+        0,
+        0
+      ],
+      "params": {
+        "file": "sealant_edge_mask.png",
+        "tiling": 1,
+        "keepAspect": false
+      },
+      "note": "区画ごとの不透明度のマスク。band-corners の既定の配置（上の段が辺、その下に外角 / 内角 / 始端 / 終端）に合わせて描いてある。"
+    },
+    {
+      "id": 2,
+      "type": "noise.perlin",
+      "pos": [
+        0,
+        340
+      ],
+      "params": {
+        "scale": 12,
+        "octaves": 4
+      },
+      "seedOffset": 3
+    },
+    {
+      "id": 3,
+      "type": "color.gradient_map",
+      "pos": [
+        320,
+        340
+      ],
+      "params": {
+        "gradient": [
+          {
+            "pos": 0.0,
+            "color": [
+              0.015,
+              0.015,
+              0.015,
+              1.0
+            ]
+          },
+          {
+            "pos": 1.0,
+            "color": [
+              0.06,
+              0.0588,
+              0.056999999999999995,
+              1.0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "type": "shape.uniform_color",
+      "pos": [
+        320,
+        680
+      ],
+      "params": {
+        "color": [
+          0.35,
+          0.35,
+          0.35,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "type": "io.material",
+      "pos": [
+        640,
+        0
+      ],
+      "params": {
+        "normalFormat": 0
+      }
+    }
+  ],
+  "links": [
+    {
+      "from": 2,
+      "fromPin": "Out",
+      "to": 3,
+      "toPin": "In"
+    },
+    {
+      "from": 3,
+      "fromPin": "Out",
+      "to": 5,
+      "toPin": "Albedo"
+    },
+    {
+      "from": 4,
+      "fromPin": "Out",
+      "to": 5,
+      "toPin": "Roughness"
+    },
+    {
+      "from": 1,
+      "fromPin": "Out",
+      "to": 5,
+      "toPin": "Opacity"
+    }
+  ],
+  "exposedParams": []
+}

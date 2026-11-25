@@ -18,6 +18,8 @@ const char* CategoryLabel(NodeCategory category) {
         case NodeCategory::Color:   return ui::Tr("カラー", "Color");
         case NodeCategory::Derive:  return ui::Tr("導出", "Derive");
         case NodeCategory::Io:      return ui::Tr("入出力", "Input / Output");
+        case NodeCategory::Path:    return ui::Tr("パス", "Path");
+        case NodeCategory::Mesh:    return ui::Tr("メッシュ", "Mesh");
         default:                    return "";
     }
 }
@@ -76,6 +78,30 @@ uint32_t ClampResolution(uint32_t resolution) {
     return result;
 }
 
+MaterialLayout MakeLayout(LayoutKind kind, TextureSize size) {
+    MaterialLayout layout;
+    layout.kind = kind;
+    if (kind == LayoutKind::Band) {
+        layout.edge = {0.0f, 0.0f, 1.0f, 1.0f};
+    } else if (kind == LayoutKind::BandCorners) {
+        // 上の段が辺（横幅いっぱい）、その下に正方形のセルを 4 つ（外角、内角、始端、終端）。
+        // 段の高さは短い辺の 1/4。隣の区画の色がにじまないよう、区画の内側へ段の 1/32 の余白を取る。
+        const float width = static_cast<float>(std::max(size.width, 1u)), height = static_cast<float>(std::max(size.height, 1u));
+        const float row = std::min(width, height) * 0.25f;
+        const float pad = row / 32.0f;
+        layout.edge = {0.0f, pad / height, 1.0f, (row - 2.0f * pad) / height};
+        const auto cell = [&](int index) {
+            return UvRect{(static_cast<float>(index) * row + pad) / width, (row + pad) / height, (row - 2.0f * pad) / width,
+                          (row - 2.0f * pad) / height};
+        };
+        layout.outerCorner = cell(0);
+        layout.innerCorner = cell(1);
+        layout.startCap = cell(2);
+        layout.endCap = cell(3);
+    }
+    return layout;
+}
+
 TextureSize GraphSize(const Graph& graph) { return {ClampResolution(graph.width), ClampResolution(graph.height)}; }
 
 TextureSize EvaluationSize(const Graph& graph, uint32_t shortSide) {
@@ -123,7 +149,7 @@ const Link* Graph::InputLink(uint64_t node, int pin) const {
 
 Node* Graph::AddNode(std::string_view type, float x, float y) {
     const NodeDef* def = FindNodeDef(type);
-    if (def == nullptr) return nullptr;
+    if (def == nullptr || def->kind != kind) return nullptr;
     Node node;
     node.id = nextId++;
     node.def = def;
@@ -148,6 +174,12 @@ bool Graph::CanLink(uint64_t fromNode, int fromPin, uint64_t toNode, int toPin) 
     if (from == nullptr || to == nullptr) return false;
     if (fromPin < 0 || fromPin >= static_cast<int>(from->def->outputs.size())) return false;
     if (toPin < 0 || toPin >= static_cast<int>(to->def->inputs.size())) return false;
+
+    // テクスチャの型（Gray / Color / Auto）は互いに繋げる。Path と Mesh は同じ型同士だけ。
+    const auto geometry = [](PinType type) { return type == PinType::Path || type == PinType::Mesh; };
+    const PinType fromType = from->def->outputs[fromPin].type;
+    const PinType toType = to->def->inputs[toPin].type;
+    if ((geometry(fromType) || geometry(toType)) && fromType != toType) return false;
 
     // toNode から下流へ辿って fromNode に着くなら循環になる。
     std::vector<uint64_t> stack = {toNode};
@@ -283,7 +315,7 @@ ParamLayout BuildParamLayout(const NodeDef& def) {
             offset += 16 * kMaxGradientStops + 32 + 4;
             continue;
         }
-        if (param.type == ParamType::File) {
+        if (param.type == ParamType::File || param.type == ParamType::Points || param.type == ParamType::Text) {
             // 定数バッファには入らない。番号を揃えるためにオフセットだけ積む。
             layout.offset.push_back(offset);
             continue;
@@ -309,7 +341,9 @@ void PackParams(const NodeDef& def, const ParamLayout& layout, const std::vector
             case ParamType::Float:  std::memcpy(dst, value.f, 4); break;
             case ParamType::Float2: std::memcpy(dst, value.f, 8); break;
             case ParamType::Color:  std::memcpy(dst, value.f, 16); break;
-            case ParamType::File: break;
+            case ParamType::File:
+            case ParamType::Points:
+            case ParamType::Text: break;
             case ParamType::Gradient: {
                 const int count = std::min<int>(static_cast<int>(value.gradient.size()), kMaxGradientStops);
                 float positions[kMaxGradientStops] = {};
