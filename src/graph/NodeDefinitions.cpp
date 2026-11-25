@@ -956,6 +956,21 @@ std::vector<NodeDef> BuildDefs() {
         defs.push_back(def);
     }
     {
+        NodeDef def;
+        def.type = "mesh.merge";
+        def.label = {"マージ", "Merge"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {{"A", {"A", "A"}, PinType::Mesh}, {"B", {"B", "B"}, PinType::Mesh}, {"C", {"C", "C"}, PinType::Mesh},
+                      {"D", {"D", "D"}, PinType::Mesh}};
+        def.outputs = {meshOut};
+        def.tooltip = {"メッシュを 1 つにまとめる。A が一番下で、B、C、D の順に上へ重なる。繋いでいない入力は飛ばす。"
+                       "塗りと帯をまとめて、1 つの出力（1 つのマテリアル）にできる。",
+                       "Merges meshes into one. A is at the bottom; B, C and D stack on top in order. Unconnected inputs are skipped. "
+                       "Use it to output a fill and a band together (with one material)."};
+        defs.push_back(def);
+    }
+    {
         // 出力ピンはメッシュの写しで、評価結果を取り出すためにだけ持つ（UI には出さない）。
         NodeDef def;
         def.type = "mesh.output";

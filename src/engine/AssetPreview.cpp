@@ -27,7 +27,8 @@ struct DrawConstants {
     uint32_t colorMask;
     uint32_t normalFormat;
     uint32_t flags;
-    uint32_t reserved[9];
+    uint32_t checkerTexture;
+    uint32_t reserved[8];
 };
 static_assert(sizeof(DrawConstants) == sizeof(uint32_t) * rhi::kRootConstantCount);
 
@@ -35,6 +36,7 @@ constexpr uint32_t kFlagSky = 1u;
 constexpr uint32_t kFlagChecker = 2u;
 constexpr uint32_t kFlagGroundMaterial = 4u;
 constexpr uint32_t kFlagSolid = 8u;
+constexpr uint32_t kFlagCheckerTexture = 16u;
 
 // b1。HLSL の cbuffer の詰め方（float3 + float で 16 バイト）に合わせる。
 struct SceneParams {
@@ -206,7 +208,8 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     params.groundTile[0] = std::max(scene.groundTileU, 1.0e-3f);
     params.groundTile[1] = std::max(scene.groundTileV, 1.0e-3f);
 
-    const uint32_t commonFlags = (settings.showSky ? kFlagSky : 0u) | (settings.uvChecker ? kFlagChecker : 0u);
+    const uint32_t commonFlags = (settings.showSky ? kFlagSky : 0u) | (settings.uvChecker ? kFlagChecker : 0u) |
+                                 (scene.hasCheckerTexture ? kFlagCheckerTexture : 0u);
     const auto uploadParams = [&](const SceneParams& value) {
         const rhi::UploadAllocation buffer = m_device->Upload().Allocate(sizeof(SceneParams), 256);
         if (buffer.IsValid()) std::memcpy(buffer.cpu, &value, sizeof(value));
@@ -288,6 +291,7 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
         for (const mesh::AssetLayer& layer : scene.asset->layers) {
             DrawConstants layerConstants = {};
             layerConstants.flags = commonFlags;
+            layerConstants.checkerTexture = scene.checkerTexture;
             SceneParams layerParams = params;
             const auto material = std::find_if(scene.materials.begin(), scene.materials.end(),
                                                [&](const AssetPreviewMaterial& m) { return m.id == layer.materialId; });
@@ -302,6 +306,7 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     for (const AssetPreviewOverlay& overlay : scene.overlays) {
         DrawConstants overlayConstants = {};
         overlayConstants.flags = commonFlags | (overlay.solid ? kFlagSolid : kFlagChecker);
+        overlayConstants.checkerTexture = scene.checkerTexture;
         SceneParams overlayParams = params;
         storeLayout(overlayParams, overlay.layout, graph::TextureSize{1024, 1024});
         std::memcpy(overlayParams.solidColor, overlay.color, sizeof(overlay.color));

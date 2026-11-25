@@ -43,4 +43,8 @@ struct StrokeOptions {
 // パスに沿った帯を作る。辺が角や端のピースに対して短すぎると失敗する。
 bool BuildStroke(const Path& path, const StrokeOptions& options, Mesh& out, std::string& error);
 
+// メッシュを 1 つにまとめる。渡した順に頂点・インデックス・ピースを並べる（先のものが下、後のものが上に描かれる）。
+// null は飛ばす。ピースの種類はそのまま残るので、塗りと帯をまとめても、UV はピースごとに割り付けられる。
+Mesh MergeMeshes(const std::vector<const Mesh*>& meshes);
+
 }  // namespace sg::mesh

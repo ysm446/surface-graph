@@ -441,6 +441,14 @@ void Application::RenderProjectView(ID3D12GraphicsCommandList* commandList) {
             scene.groundTileV = wide ? ground->tileSize : ground->tileSize * aspect;
         }
     }
+    // 区画の確認用の絵で、塗りに貼る UV チェッカー（マテリアルの 3D ビューの UV チェッカーと同じ画像）。
+    const std::filesystem::path checkerPath = std::filesystem::path(SG_ASSET_DIR) / L"textures" / L"uv_checker.png";
+    if (rhi::GpuTexture* checker = m_evaluator.AcquireImage(commandList, checkerPath)) {
+        rhi::TransitionIfNeeded(commandList, *checker,
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        scene.hasCheckerTexture = true;
+        scene.checkerTexture = checker->SrvIndex();
+    }
     // メッシュの階層では、表示中の出力（まだアセットに入っていないもの）と、パスの線を重ねて描く。
     if (m_level == Level::Mesh) {
         if (m_meshPreview.hasMesh && m_meshPreview.assetLayer < 0) {
@@ -1219,6 +1227,10 @@ constexpr float kPathSegmentPickRadius = 7.0f;
 // 吸着。格子の刻み（メートル）と、隣の頂点に X か Z を揃える距離（ピクセル）。
 constexpr float kPathGridStep = 0.05f;
 constexpr float kPathAlignPixels = 8.0f;
+// 移動ギズモ。軸の長さ、当たり判定の幅、中央の平面のハンドルの半分の大きさ（画面上。road-material-editor と同じ値）。
+constexpr float kGizmoLength = 64.0f;
+constexpr float kGizmoHitRadius = 8.0f;
+constexpr float kGizmoCenterRadius = 7.0f;
 
 // パスノード（path.points）のパラメータの番号。src/graph/NodeDefinitions.cpp の並びと揃えること。
 constexpr int kPathParamPoints = 0;
@@ -1300,7 +1312,7 @@ AssetCamera MakeAssetCamera(const engine::PreviewSettings& settings, const ImVec
 }  // namespace
 
 // いま編集できるパスノード。メッシュの階層で、選んだノードがパスならそれ、そうでなければ表示中のパス。
-// 選んだノードを優先するので、線やメッシュ出力を表示したまま、パスを選んで頂点を動かせる。
+// 選んだノードを優先するので、帯やメッシュ出力を表示したまま、パスを選んで頂点を動かせる。
 graph::Node* Application::PathEditNode() {
     graph::Node* node = nullptr;
     if (m_level == Level::Mesh) {
@@ -1314,22 +1326,42 @@ graph::Node* Application::PathEditNode() {
     const uint64_t id = (node != nullptr) ? node->id : 0;
     if (id != m_pathEditNode) {
         m_pathEditNode = id;
-        // --select-path-point（スクリーンショットの確認用）は、最初に選ぶ頂点を決める。
-        m_pathPoint = (m_options.selectPathPoint > 0) ? m_options.selectPathPoint - 1 : -1;
+        m_pathSelected.clear();
+        m_pathPoint = -1;
         m_pathDragging = false;
+        m_pathBoxPending = false;
+        m_pathBoxActive = false;
+        m_pathGizmoPart = -1;
+        // --select-path-point（スクリーンショットの確認用）は、最初に選ぶ頂点を決める。0 なら全部。
+        if (node != nullptr && m_options.selectPathPoint >= 0) {
+            const int count = static_cast<int>(node->params[kPathParamPoints].points.size());
+            if (m_options.selectPathPoint == 0) {
+                for (int i = 0; i < count; ++i) m_pathSelected.push_back(i);
+            } else if (m_options.selectPathPoint <= count) {
+                m_pathSelected.push_back(m_options.selectPathPoint - 1);
+            }
+            m_pathPoint = m_pathSelected.empty() ? -1 : m_pathSelected.back();
+        }
     }
-    if (node != nullptr && m_pathPoint >= static_cast<int>(node->params[kPathParamPoints].points.size())) m_pathPoint = -1;
+    if (node != nullptr) {
+        // 頂点が減ったら（アンドゥなど）、選択から外す。
+        const int count = static_cast<int>(node->params[kPathParamPoints].points.size());
+        std::erase_if(m_pathSelected, [count](int index) { return index < 0 || index >= count; });
+        if (m_pathPoint >= count) m_pathPoint = -1;
+    }
     return node;
 }
 
 // パスの頂点（制御点）の編集。**キャンバスの InvisibleButton の直後に呼ぶこと**（クリックの判定に使う）。
 // 作法は road-material-editor と同じ:
-//   頂点をクリック          選ぶ
-//   頂点をドラッグ          動かす（格子と、隣の頂点の X / Z に吸着。Shift で吸着しない）
+//   頂点をクリック          選ぶ（Shift + クリックで選択に足す / 外す）
+//   空をドラッグ            矩形で選ぶ（Shift で選択に足す）
+//   頂点をドラッグ          選んだ頂点をまとめて動かす（格子と、隣の頂点の X / Z に吸着。Shift で吸着しない）
+//   ギズモをドラッグ        選んだ頂点を、X か Z の軸に沿って動かす。中央の四角は平面（XZ）で動かす
 //   Ctrl + 空をクリック     選んだ頂点の次に頂点を足す（選んでいなければ末尾。先頭を選んでいれば先頭の前）
 //   Ctrl + 線をクリック     そこに頂点を挿入する
 //   Ctrl + 反対の端をクリック   パスを閉じる
-//   Delete / 右クリック     頂点を消す。右クリックのメニューには、挿入・閉じる・向きの反転もある
+//   Delete / 右クリック     選んだ頂点を消す。右クリックのメニューには、挿入・閉じる・向きの反転もある
 // **ふつうのクリックはデータを変えない**（選ぶだけ）。増やすのは Ctrl、動かすのはドラッグ。
 Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const PathEditView& view) {
     PathEditHover hover;
@@ -1339,8 +1371,78 @@ Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const 
     const int count = static_cast<int>(points.size());
     graph::Point2 mouseWorld = {0.0f, 0.0f};
     const bool mouseOnGround = view.toWorld(io.MousePos, mouseWorld);
+    const auto isSelected = [&](int index) { return std::find(m_pathSelected.begin(), m_pathSelected.end(), index) != m_pathSelected.end(); };
+    const auto selectOnly = [&](int index) {
+        m_pathSelected.assign(1, index);
+        m_pathPoint = index;
+    };
+    const auto clearSelection = [&]() {
+        m_pathSelected.clear();
+        m_pathPoint = -1;
+    };
+    // 掴んだ時点の、選んだ頂点の位置を控える（動かす量は、そこからの差で決める。吸着で積み重ならない）。
+    const auto rememberStart = [&]() {
+        m_pathDragStart.clear();
+        for (const int index : m_pathSelected) m_pathDragStart.push_back(points[static_cast<size_t>(index)]);
+    };
+    const auto snapGrid = [&](float value) { return io.KeyShift ? value : std::round(value / kPathGridStep) * kPathGridStep; };
 
-    if (view.hovered) {
+    // --- 移動ギズモ ---
+    // 選んだ頂点の重心に置く。軸は X（赤）と Z（青）で、画面上の長さは一定。中央の四角は平面（XZ）で動かす。
+    // 頂点が 1 つのときは、中央はその頂点そのものなので、軸だけを出す。
+    if (!m_pathSelected.empty()) {
+        graph::Point2 centroid = {0.0f, 0.0f};
+        for (const int index : m_pathSelected) {
+            centroid.x += points[static_cast<size_t>(index)].x;
+            centroid.y += points[static_cast<size_t>(index)].y;
+        }
+        centroid.x /= static_cast<float>(m_pathSelected.size());
+        centroid.y /= static_cast<float>(m_pathSelected.size());
+        hover.gizmoWorld = centroid;
+        if (view.toScreen(centroid, hover.gizmoCenter)) {
+            hover.gizmoValid = true;
+            hover.gizmoPlane = m_pathSelected.size() > 1;
+            const graph::Point2 axes[2] = {{1.0f, 0.0f}, {0.0f, 1.0f}};
+            // 軸の画面上の向きと、その向きでの 1 メートルの長さ。重心から少し先の点を写して測る。
+            const float probe = 0.1f;
+            for (int axis = 0; axis < 2; ++axis) {
+                ImVec2 ahead;
+                if (!view.toScreen({centroid.x + axes[axis].x * probe, centroid.y + axes[axis].y * probe}, ahead)) continue;
+                const float dx = ahead.x - hover.gizmoCenter.x, dy = ahead.y - hover.gizmoCenter.y;
+                const float length = std::hypot(dx, dy);
+                if (length < 1.0e-3f) continue;
+                hover.gizmoAxisValid[axis] = true;
+                hover.gizmoDirection[axis] = {dx / length, dy / length};
+                hover.gizmoPixelsPerMeter[axis] = length / probe;
+                const float reach = ui::Scaled(kGizmoLength);
+                hover.gizmoTip[axis] = {hover.gizmoCenter.x + dx / length * reach, hover.gizmoCenter.y + dy / length * reach};
+            }
+        }
+    }
+    const auto distanceToSegment = [](ImVec2 p, ImVec2 a, ImVec2 b) {
+        const float dx = b.x - a.x, dy = b.y - a.y;
+        const float lengthSquared = dx * dx + dy * dy;
+        const float t = (lengthSquared > 1.0e-6f) ? std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared, 0.0f, 1.0f) : 0.0f;
+        return std::hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+    };
+    if (hover.gizmoValid && view.hovered && m_pathGizmoPart < 0 && !m_pathDragging && !m_pathBoxPending) {
+        if (hover.gizmoPlane && std::abs(io.MousePos.x - hover.gizmoCenter.x) <= ui::Scaled(kGizmoCenterRadius + 2.0f) &&
+            std::abs(io.MousePos.y - hover.gizmoCenter.y) <= ui::Scaled(kGizmoCenterRadius + 2.0f)) {
+            hover.gizmoPart = 2;
+        } else {
+            for (int axis = 0; axis < 2; ++axis) {
+                if (!hover.gizmoAxisValid[axis]) continue;
+                // 中央の近くは頂点（か平面のハンドル）に譲る。
+                const ImVec2 start = {hover.gizmoCenter.x + hover.gizmoDirection[axis].x * ui::Scaled(kGizmoCenterRadius + 4.0f),
+                                      hover.gizmoCenter.y + hover.gizmoDirection[axis].y * ui::Scaled(kGizmoCenterRadius + 4.0f)};
+                if (distanceToSegment(io.MousePos, start, hover.gizmoTip[axis]) <= ui::Scaled(kGizmoHitRadius)) hover.gizmoPart = axis;
+            }
+        }
+    }
+    if (m_pathGizmoPart >= 0) hover.gizmoPart = m_pathGizmoPart;
+
+    // --- カーソルの下の頂点と線 ---
+    if (view.hovered && hover.gizmoPart < 0) {
         float best = kPathPointPickRadius * kPathPointPickRadius;
         for (int i = 0; i < count; ++i) {
             ImVec2 screen;
@@ -1383,6 +1485,7 @@ Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const 
     }
 
     // 吸着。隣の頂点と X か Z が揃う位置を優先し、次に格子。Shift を押している間は吸着しない。
+    // 隣が一緒に動いている（選択に入っている）ときは、揃える相手にしない。
     const auto snapped = [&](graph::Point2 position, int index) {
         if (io.KeyShift) return position;
         graph::Point2 result = {std::round(position.x / kPathGridStep) * kPathGridStep, std::round(position.y / kPathGridStep) * kPathGridStep};
@@ -1397,7 +1500,7 @@ Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const 
         for (const int offset : {-1, 1}) {
             int neighbor = index + offset;
             if (closed && pointCount > 0) neighbor = ((neighbor % pointCount) + pointCount) % pointCount;
-            if (index < 0 || neighbor < 0 || neighbor >= pointCount || neighbor == index) continue;
+            if (index < 0 || neighbor < 0 || neighbor >= pointCount || neighbor == index || isSelected(neighbor)) continue;
             const graph::Point2 other = points[static_cast<size_t>(neighbor)];
             if (std::abs(position.x - other.x) < reach) result.x = other.x;
             if (std::abs(position.y - other.y) < reach) result.y = other.y;
@@ -1408,59 +1511,160 @@ Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const 
     hover.onGround = mouseOnGround;
     hover.preview = snapped(mouseWorld, -1);
 
-    bool openMenu = false;
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-        if (io.KeyCtrl && hover.point >= 0) {
+    // --- 押したとき ---
+    // Alt + 左ボタンは視点の操作（3D ビュー）なので、選択を変えない。
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !io.KeyAlt) {
+        if (hover.gizmoPart >= 0 && !io.KeyCtrl) {
+            // ギズモを掴んだ。選択は変えず、掴んだ時点の投影（軸の画面上の向きと縮尺）を固定する
+            // （動かしている間に軸が動いても、ドラッグの量が跳ねない）。
+            m_pathGizmoPart = hover.gizmoPart;
+            m_pathGizmoPress = io.MousePos;
+            m_pathGizmoPressWorld = mouseWorld;
+            if (hover.gizmoPart < 2) {
+                m_pathGizmoDirection = hover.gizmoDirection[hover.gizmoPart];
+                m_pathGizmoMetersPerPixel = 1.0f / std::max(hover.gizmoPixelsPerMeter[hover.gizmoPart], 1.0e-3f);
+            }
+            rememberStart();
+            m_pathDragging = true;
+        } else if (io.KeyCtrl && hover.point >= 0) {
             // 端を選んでいて、反対の端を Ctrl + クリックしたら閉じる。
             const bool ends = !closed && count >= 3 && m_pathPoint >= 0 && hover.point != m_pathPoint &&
                               (m_pathPoint == 0 || m_pathPoint == count - 1) && (hover.point == 0 || hover.point == count - 1);
             if (ends) node.params[kPathParamClosed].i = 1;
-            m_pathPoint = hover.point;
+            selectOnly(hover.point);
         } else if (io.KeyCtrl && hover.segment >= 0) {
             points.insert(points.begin() + hover.segment + 1, hover.segmentPoint);
-            m_pathPoint = hover.segment + 1;
+            selectOnly(hover.segment + 1);
+            rememberStart();
+            m_pathGrabbed = 0;
             m_pathDragging = true;
         } else if (io.KeyCtrl && mouseOnGround) {
             points.insert(points.begin() + hover.insertIndex, mouseWorld);
+            selectOnly(hover.insertIndex);
             points[static_cast<size_t>(hover.insertIndex)] = snapped(mouseWorld, hover.insertIndex);
-            m_pathPoint = hover.insertIndex;
+            rememberStart();
+            m_pathGrabbed = 0;
             m_pathDragging = true;
         } else if (!io.KeyCtrl && hover.point >= 0) {
-            m_pathPoint = hover.point;
-            m_pathDragging = true;
-        } else if (!io.KeyCtrl) {
-            m_pathPoint = -1;
+            if (io.KeyShift) {
+                // 選択に足す / 外す。
+                if (isSelected(hover.point)) {
+                    std::erase(m_pathSelected, hover.point);
+                    m_pathPoint = m_pathSelected.empty() ? -1 : m_pathSelected.back();
+                } else {
+                    m_pathSelected.push_back(hover.point);
+                    m_pathPoint = hover.point;
+                }
+            } else {
+                // 選んである頂点を掴んだら、選択はそのままにして、まとめて動かせるようにする。
+                if (!isSelected(hover.point)) selectOnly(hover.point);
+                m_pathPoint = hover.point;
+                rememberStart();
+                m_pathGrabbed = static_cast<int>(std::find(m_pathSelected.begin(), m_pathSelected.end(), hover.point) - m_pathSelected.begin());
+                m_pathDragging = true;
+            }
+        } else if (!io.KeyCtrl && !ImGui::IsKeyDown(ImGuiKey_L)) {
+            // 空を押した。動かせば矩形で選び、動かさずに離せば選択を外す（L を押している間はライトの操作）。
+            m_pathBoxPending = true;
+            m_pathBoxActive = false;
+            m_pathBoxStart = io.MousePos;
+            m_pathBoxAdditive = io.KeyShift;
         }
     }
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) m_pathDragging = false;
-    if (m_pathDragging && view.hovered && mouseOnGround && m_pathPoint >= 0 && m_pathPoint < static_cast<int>(points.size()) &&
-        ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
-        points[static_cast<size_t>(m_pathPoint)] = snapped(mouseWorld, m_pathPoint);
+
+    // --- 押している間 ---
+    const bool leftDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if (!leftDown) {
+        m_pathDragging = false;
+        m_pathGizmoPart = -1;
     }
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    const bool startsMatch = m_pathDragStart.size() == m_pathSelected.size();
+    if (m_pathDragging && startsMatch && m_pathGizmoPart >= 0) {
+        // ギズモ。軸は、掴んだ時点の画面上の向きへ写した量で動かす。平面は、地面の上の点の差で動かす。
+        graph::Point2 delta = {0.0f, 0.0f};
+        if (m_pathGizmoPart < 2) {
+            const float pixels = (io.MousePos.x - m_pathGizmoPress.x) * m_pathGizmoDirection.x + (io.MousePos.y - m_pathGizmoPress.y) * m_pathGizmoDirection.y;
+            const float amount = snapGrid(pixels * m_pathGizmoMetersPerPixel);
+            delta = (m_pathGizmoPart == 0) ? graph::Point2{amount, 0.0f} : graph::Point2{0.0f, amount};
+        } else if (mouseOnGround) {
+            delta = {snapGrid(mouseWorld.x - m_pathGizmoPressWorld.x), snapGrid(mouseWorld.y - m_pathGizmoPressWorld.y)};
+        }
+        for (size_t i = 0; i < m_pathSelected.size(); ++i) {
+            points[static_cast<size_t>(m_pathSelected[i])] = {m_pathDragStart[i].x + delta.x, m_pathDragStart[i].y + delta.y};
+        }
+    } else if (m_pathDragging && startsMatch && view.hovered && mouseOnGround && m_pathGrabbed >= 0 &&
+               m_pathGrabbed < static_cast<int>(m_pathSelected.size()) && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f)) {
+        // 頂点を掴んで動かす。掴んだ頂点をカーソルの下（吸着した位置）へ運び、ほかの選んだ頂点も同じだけ動かす。
+        const int grabbedIndex = m_pathSelected[static_cast<size_t>(m_pathGrabbed)];
+        const graph::Point2 target = snapped(mouseWorld, grabbedIndex);
+        const graph::Point2 delta = {target.x - m_pathDragStart[static_cast<size_t>(m_pathGrabbed)].x,
+                                     target.y - m_pathDragStart[static_cast<size_t>(m_pathGrabbed)].y};
+        for (size_t i = 0; i < m_pathSelected.size(); ++i) {
+            points[static_cast<size_t>(m_pathSelected[i])] = {m_pathDragStart[i].x + delta.x, m_pathDragStart[i].y + delta.y};
+        }
+    }
+    // 矩形の選択。
+    if (m_pathBoxPending) {
+        const float moved = std::abs(io.MousePos.x - m_pathBoxStart.x) + std::abs(io.MousePos.y - m_pathBoxStart.y);
+        if (leftDown && moved > 4.0f) m_pathBoxActive = true;
+        const ImVec2 boxMin = {std::min(m_pathBoxStart.x, io.MousePos.x), std::min(m_pathBoxStart.y, io.MousePos.y)};
+        const ImVec2 boxMax = {std::max(m_pathBoxStart.x, io.MousePos.x), std::max(m_pathBoxStart.y, io.MousePos.y)};
+        hover.boxActive = m_pathBoxActive;
+        hover.boxMin = boxMin;
+        hover.boxMax = boxMax;
+        if (!leftDown) {
+            if (m_pathBoxActive) {
+                if (!m_pathBoxAdditive) m_pathSelected.clear();
+                for (int i = 0; i < count; ++i) {
+                    ImVec2 screen;
+                    if (!view.toScreen(points[static_cast<size_t>(i)], screen)) continue;
+                    if (screen.x >= boxMin.x && screen.x <= boxMax.x && screen.y >= boxMin.y && screen.y <= boxMax.y && !isSelected(i)) {
+                        m_pathSelected.push_back(i);
+                    }
+                }
+                m_pathPoint = m_pathSelected.empty() ? -1 : m_pathSelected.back();
+            } else if (!m_pathBoxAdditive) {
+                clearSelection();
+            }
+            m_pathBoxPending = false;
+            m_pathBoxActive = false;
+            hover.boxActive = false;
+        }
+    }
+
+    // --- 右クリックと Delete ---
+    bool openMenu = false;
+    // Alt + 右ボタンも視点の操作（近づく・離れる）なので、メニューは開かない。
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && !io.KeyAlt) {
         m_pathMenuPoint = hover.point;
         m_pathMenuSegment = hover.segment;
         m_pathMenuPosition = hover.segmentPoint;
-        if (hover.point >= 0) m_pathPoint = hover.point;
+        if (hover.point >= 0 && !isSelected(hover.point)) selectOnly(hover.point);
         openMenu = (hover.point >= 0 || hover.segment >= 0);
     }
-    // 頂点は 2 つより減らさない。
-    if (view.hovered && !io.WantTextInput && m_pathPoint >= 0 && points.size() > 2 && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
-        points.erase(points.begin() + m_pathPoint);
-        m_pathPoint = -1;
+    // 選んだ頂点を消す。頂点は 2 つより減らさない（減らしきれないぶんは残す）。
+    const auto deleteSelected = [&]() {
+        std::vector<int> order = m_pathSelected;
+        std::sort(order.begin(), order.end(), std::greater<int>());
+        for (const int index : order) {
+            if (points.size() <= 2) break;
+            if (index >= 0 && index < static_cast<int>(points.size())) points.erase(points.begin() + index);
+        }
+        clearSelection();
+    };
+    if (view.hovered && !io.WantTextInput && !m_pathSelected.empty() && points.size() > 2 && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+        deleteSelected();
     }
 
     if (openMenu) ImGui::OpenPopup("pathPointMenu");
     if (ImGui::BeginPopup("pathPointMenu")) {
         const int pointCount = static_cast<int>(points.size());
-        if (ImGui::MenuItem(ui::Tr("頂点を削除", "Delete Point"), "Delete", false, m_pathMenuPoint >= 0 && m_pathMenuPoint < pointCount && pointCount > 2)) {
-            points.erase(points.begin() + m_pathMenuPoint);
-            m_pathPoint = -1;
-        }
+        const char* deleteLabel = (m_pathSelected.size() > 1) ? ui::Tr("選んだ頂点を削除", "Delete Selected Points") : ui::Tr("頂点を削除", "Delete Point");
+        if (ImGui::MenuItem(deleteLabel, "Delete", false, m_pathMenuPoint >= 0 && m_pathMenuPoint < pointCount && pointCount > 2)) deleteSelected();
         if (ImGui::MenuItem(ui::Tr("ここに頂点を挿入", "Insert Point Here"), ui::Tr("Ctrl + クリック", "Ctrl + Click"), false,
                             m_pathMenuSegment >= 0 && m_pathMenuSegment < pointCount)) {
             points.insert(points.begin() + m_pathMenuSegment + 1, m_pathMenuPosition);
-            m_pathPoint = m_pathMenuSegment + 1;
+            selectOnly(m_pathMenuSegment + 1);
         }
         ImGui::Separator();
         if (ImGui::MenuItem(closed ? ui::Tr("パスを開く", "Open Path") : ui::Tr("パスを閉じる", "Close Path"), nullptr, false, pointCount >= 3)) {
@@ -1468,6 +1672,7 @@ Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const 
         }
         if (ImGui::MenuItem(ui::Tr("向きを反転", "Reverse Direction"))) {
             std::reverse(points.begin(), points.end());
+            for (int& index : m_pathSelected) index = pointCount - 1 - index;
             if (m_pathPoint >= 0) m_pathPoint = pointCount - 1 - m_pathPoint;
         }
         ImGui::EndPopup();
@@ -1475,7 +1680,8 @@ Application::PathEditHover Application::HandlePathEdit(graph::Node& node, const 
     return hover;
 }
 
-// 制御点と、曲線のときのガイド（制御点を結ぶ折れ線）を描く。Ctrl を押している間は、次のクリックで何が起きるかを先に見せる。
+// 制御点、曲線のときのガイド（制御点を結ぶ折れ線）、選択の矩形、移動ギズモを描く。
+// Ctrl を押している間は、次のクリックで何が起きるかを先に見せる。
 void Application::DrawPathEditOverlay(ImDrawList* drawList, const graph::Node& node, const PathEditView& view, const PathEditHover& hover) {
     const std::vector<graph::Point2>& points = node.params[kPathParamPoints].points;
     const bool closed = node.params[kPathParamClosed].i != 0;
@@ -1490,11 +1696,12 @@ void Application::DrawPathEditOverlay(ImDrawList* drawList, const graph::Node& n
         ImVec2 sa, sb;
         if (view.toScreen(a, sa) && view.toScreen(b, sb)) drawList->AddLine(sa, sb, color, thickness);
     };
+    const bool idle = !m_pathDragging && !hover.boxActive;
     for (size_t i = 0; i + 1 < count || (closed && i < count); ++i) {
-        const bool hot = !m_pathDragging && io.KeyCtrl && static_cast<int>(i) == hover.segment;
+        const bool hot = idle && io.KeyCtrl && static_cast<int>(i) == hover.segment;
         if (curved || hot) line(points[i], points[(i + 1) % count], hot ? white : guideColor, hot ? 2.0f : 1.0f);
     }
-    if (view.hovered && io.KeyCtrl && !m_pathDragging) {
+    if (view.hovered && io.KeyCtrl && idle) {
         ImVec2 target;
         if (hover.segment >= 0) {
             if (view.toScreen(hover.segmentPoint, target)) drawList->AddCircleFilled(target, ui::Scaled(4.0f), white, 16);
@@ -1509,18 +1716,54 @@ void Application::DrawPathEditOverlay(ImDrawList* drawList, const graph::Node& n
     for (size_t i = 0; i < count; ++i) {
         ImVec2 screen;
         if (!view.toScreen(points[i], screen)) continue;
-        const bool selected = static_cast<int>(i) == m_pathPoint;
-        const bool hot = static_cast<int>(i) == hover.point && !m_pathDragging;
+        const bool selected = std::find(m_pathSelected.begin(), m_pathSelected.end(), static_cast<int>(i)) != m_pathSelected.end();
+        const bool hot = static_cast<int>(i) == hover.point && idle;
         // 始点は四角、ほかは丸。選んだ頂点は白い輪で囲む。
         const float radius = ui::Scaled(selected ? 5.5f : hot ? 5.0f : 4.0f);
         if (i == 0) drawList->AddRectFilled({screen.x - radius, screen.y - radius}, {screen.x + radius, screen.y + radius}, pathColor, 1.5f);
         else drawList->AddCircleFilled(screen, radius, pathColor, 16);
         if (selected || hot) drawList->AddCircle(screen, radius + ui::Scaled(2.5f), white, 20, selected ? 2.0f : 1.0f);
     }
+
+    // 移動ギズモ。軸は矢印、平面は中央の四角。載せた部品と掴んでいる部品は明るくする。
+    if (hover.gizmoValid && !hover.boxActive) {
+        const int axisIds[2] = {0, 2};  // X と Z（ui::TransformAxisColor の番号）
+        for (int axis = 0; axis < 2; ++axis) {
+            if (!hover.gizmoAxisValid[axis]) continue;
+            const bool hot = hover.gizmoPart == axis;
+            ImU32 color = ui::TransformAxisColor(axisIds[axis]);
+            if (hot) color = white;
+            const ImVec2 direction = hover.gizmoDirection[axis];
+            const ImVec2 side = {-direction.y, direction.x};
+            const ImVec2 tip = hover.gizmoTip[axis];
+            const float head = ui::Scaled(11.0f), halfWidth = ui::Scaled(5.0f);
+            const ImVec2 base = {tip.x - direction.x * head, tip.y - direction.y * head};
+            const ImVec2 start = {hover.gizmoCenter.x + direction.x * ui::Scaled(kGizmoCenterRadius + 2.0f),
+                                  hover.gizmoCenter.y + direction.y * ui::Scaled(kGizmoCenterRadius + 2.0f)};
+            drawList->AddLine(start, base, color, ui::Scaled(hot ? 3.0f : 2.5f));
+            drawList->AddTriangleFilled(tip, {base.x + side.x * halfWidth, base.y + side.y * halfWidth},
+                                        {base.x - side.x * halfWidth, base.y - side.y * halfWidth}, color);
+        }
+        if (hover.gizmoPlane) {
+            const float half = ui::Scaled(kGizmoCenterRadius);
+            const bool hot = hover.gizmoPart == 2;
+            const ImVec2 min = {hover.gizmoCenter.x - half, hover.gizmoCenter.y - half}, max = {hover.gizmoCenter.x + half, hover.gizmoCenter.y + half};
+            drawList->AddRectFilled(min, max, hot ? IM_COL32(255, 255, 255, 200) : IM_COL32(235, 235, 235, 110), 2.0f);
+            drawList->AddRect(min, max, white, 2.0f);
+        }
+    }
+
+    // 選択の矩形（アクセントの色）。
+    if (hover.boxActive) {
+        const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+        drawList->AddRectFilled(hover.boxMin, hover.boxMax, ImGui::ColorConvertFloat4ToU32(ImVec4(accent.x, accent.y, accent.z, 0.15f)));
+        drawList->AddRect(hover.boxMin, hover.boxMax, ImGui::ColorConvertFloat4ToU32(ImVec4(accent.x, accent.y, accent.z, 0.9f)));
+    }
 }
 
 // 操作の一覧を右下に薄く出す。Ctrl を押している間は、増やす操作に切り替える。左下には選んだ頂点の番号と座標。
-void Application::DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool showPoint) {
+// in3d なら、視点の操作（Alt + 左 / 中 / 右ドラッグ。DCC ツールと同じ）も添える。
+void Application::DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool in3d) {
     const float pad = ui::Scaled(8.0f);
     const ImU32 textColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
     const ImU32 shadowColor = IM_COL32(0, 0, 0, 160);
@@ -1533,16 +1776,18 @@ void Application::DrawPathEditHints(ImDrawList* drawList, const graph::Node& nod
         const char* key;
         const char* action;
     };
-    const Row normal[] = {{ui::Tr("クリック", "Click"), ui::Tr("頂点を選ぶ", "select a point")},
-                          {ui::Tr("ドラッグ", "Drag"), ui::Tr("動かす（Shift で吸着しない）", "move (Shift: no snapping)")},
+    const Row view3d[] = {{ui::Tr("Alt + 左 / 中 / 右ドラッグ", "Alt + Left / Middle / Right-drag"), ui::Tr("視点を回す / パン / ズーム", "orbit / pan / zoom")}};
+    const Row normal[] = {{ui::Tr("クリック / 空をドラッグ", "Click / Drag empty"), ui::Tr("頂点を選ぶ / 矩形で選ぶ（Shift で足す）", "select / box select (Shift adds)")},
+                          {ui::Tr("頂点かギズモをドラッグ", "Drag a point or the gizmo"), ui::Tr("動かす（Shift で吸着しない）", "move (Shift: no snapping)")},
                           {"Ctrl", ui::Tr("頂点を足す", "add points")},
                           {ui::Tr("Delete / 右クリック", "Delete / Right-click"), ui::Tr("消す / メニュー", "delete / menu")}};
     const Row extend[] = {{ui::Tr("空をクリック", "Click empty"), ui::Tr("頂点を足す", "add a point")},
                           {ui::Tr("線をクリック", "Click a line"), ui::Tr("頂点を挿入", "insert a point")},
                           {ui::Tr("反対の端をクリック", "Click the other end"), ui::Tr("パスを閉じる", "close the path")}};
     const bool extending = ImGui::GetIO().KeyCtrl;
-    const Row* rows = extending ? extend : normal;
-    const int rowCount = extending ? IM_ARRAYSIZE(extend) : IM_ARRAYSIZE(normal);
+    std::vector<Row> rows(extending ? std::begin(extend) : std::begin(normal), extending ? std::end(extend) : std::end(normal));
+    if (in3d && !extending) rows.insert(rows.end(), std::begin(view3d), std::end(view3d));
+    const int rowCount = static_cast<int>(rows.size());
     char text[192];
     for (int i = 0; i < rowCount; ++i) {
         std::snprintf(text, sizeof(text), "%s:  %s", rows[i].key, rows[i].action);
@@ -1550,9 +1795,12 @@ void Application::DrawPathEditHints(ImDrawList* drawList, const graph::Node& nod
         overlayText({areaMax.x - pad - width, areaMax.y - pad - lineHeight - (lineHeight + 2.0f) * static_cast<float>(rowCount - 1 - i)}, text);
     }
     const std::vector<graph::Point2>& points = node.params[kPathParamPoints].points;
-    if (showPoint && m_pathPoint >= 0 && m_pathPoint < static_cast<int>(points.size())) {
-        const graph::Point2 point = points[static_cast<size_t>(m_pathPoint)];
-        std::snprintf(text, sizeof(text), ui::Tr("頂点 %d   X %.2f  Z %.2f", "Point %d   X %.2f  Z %.2f"), m_pathPoint + 1, point.x, point.y);
+    if (m_pathSelected.size() == 1 && m_pathSelected[0] < static_cast<int>(points.size())) {
+        const graph::Point2 point = points[static_cast<size_t>(m_pathSelected[0])];
+        std::snprintf(text, sizeof(text), ui::Tr("頂点 %d   X %.2f  Z %.2f", "Point %d   X %.2f  Z %.2f"), m_pathSelected[0] + 1, point.x, point.y);
+        overlayText({areaMin.x + pad, areaMax.y - pad - lineHeight}, text);
+    } else if (m_pathSelected.size() > 1) {
+        std::snprintf(text, sizeof(text), ui::Tr("%zu 点を選択", "%zu points selected"), m_pathSelected.size());
         overlayText({areaMin.x + pad, areaMax.y - pad - lineHeight}, text);
     }
 }
@@ -1583,6 +1831,31 @@ void Application::DrawPathEditIn3d(ImDrawList* drawList, const ImVec2& areaMin, 
     drawList->PushClipRect(areaMin, areaMax, true);
     DrawPathEditOverlay(drawList, *node, view, m_path3dHover);
     DrawPathEditHints(drawList, *node, areaMin, areaMax, true);
+    drawList->PopClipRect();
+}
+
+// 3D ビューのワイヤーフレーム。アセットのレイヤーと、表示中の出力（まだアセットに入っていないもの）の三角形の辺を、
+// 描いた絵の上に黒い線で重ねる。メッシュは小さいので、頂点を画面へ写して ImGui の線で描く（太さが視点によらず一定になる）。
+void Application::DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax) {
+    if (!m_assetWireframe || !ShowsAssetView()) return;
+    const AssetCamera camera = MakeAssetCamera(m_assetViewSettings, areaMin, areaMax, m_assetFrameX, m_assetFrameZ, m_assetFrameHalf);
+    const ImU32 color = IM_COL32(0, 0, 0, 215);
+    std::vector<ImVec2> screen;
+    std::vector<char> visible;
+    const auto drawMesh = [&](const mesh::Mesh& mesh) {
+        screen.resize(mesh.vertices.size());
+        visible.assign(mesh.vertices.size(), 0);
+        for (size_t i = 0; i < mesh.vertices.size(); ++i) visible[i] = camera.ToScreen(mesh.vertices[i].position, screen[i]) ? 1 : 0;
+        for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+            const uint32_t a = mesh.indices[i], b = mesh.indices[i + 1], c = mesh.indices[i + 2];
+            // カメラの後ろに回った頂点を持つ三角形は描かない。
+            if (!visible[a] || !visible[b] || !visible[c]) continue;
+            drawList->AddTriangle(screen[a], screen[b], screen[c], color, 1.0f);
+        }
+    };
+    drawList->PushClipRect(areaMin, areaMax, true);
+    for (const mesh::AssetLayer& layer : m_asset.layers) drawMesh(layer.mesh);
+    if (m_level == Level::Mesh && m_meshPreview.hasMesh && m_meshPreview.assetLayer < 0) drawMesh(m_meshPreview.layer.mesh);
     drawList->PopClipRect();
 }
 
@@ -1619,7 +1892,11 @@ void Application::UpdateMeshPreview() {
     m_meshPreview.hasMesh = true;
     if (m_meshPreview.assetLayer < 0) {
         mesh::MaterialInfo info;
-        info.layout = graph::MakeLayout(graph::LayoutKind::BandCorners, info.size);
+        // 区画は、帯のピース（辺、角、端）を持つメッシュにだけ要る。塗りだけのメッシュは、タイル（区画なし）で割り付ける
+        // （塗りに帯用の区画の図を出すと、関係のない枠が UV の表示に出てしまう）。
+        const bool hasBandPieces = std::any_of(result->mesh->pieces.begin(), result->mesh->pieces.end(),
+                                               [](const mesh::Piece& piece) { return piece.kind != mesh::PieceKind::Fill; });
+        info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
         std::string error;
         m_meshPreview.layout = info.layout;
         m_meshPreview.hasMesh = mesh::AssignUvs(*result->mesh, info, m_meshPreview.layer, error);
@@ -1780,10 +2057,9 @@ void Application::DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax) {
             for (int u = firstU; u < lastU; ++u) {
                 const ImVec2 min = toScreen({static_cast<float>(u), static_cast<float>(v)});
                 const ImVec2 max = {min.x + tile.x, min.y + tile.y};
-                // 0〜1 の外のタイルは、少し暗くして見分ける。
-                const ImU32 tint = (u == 0 && v == 0) ? IM_COL32_WHITE : IM_COL32(150, 150, 150, 255);
-                if (texture != ImTextureID{}) drawList->AddImage(texture, min, max, {0.0f, 0.0f}, {1.0f, 1.0f}, tint);
-                else drawList->AddRectFilled(min, max, (u == 0 && v == 0) ? IM_COL32(52, 52, 52, 255) : IM_COL32(40, 40, 40, 255));
+                // どのタイルも同じ明るさで置く（どこが 0〜1 かは、グリッドの数字で分かる）。
+                if (texture != ImTextureID{}) drawList->AddImage(texture, min, max);
+                else drawList->AddRectFilled(min, max, IM_COL32(48, 48, 48, 255));
             }
         }
         // 区画。マテリアルが無いときは色を敷き、あるときは枠だけを引く。名前を左上に小さく添える。
@@ -1809,8 +2085,8 @@ void Application::DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax) {
                 }
             }
         }
-        // UV の 0〜1 の枠。
-        drawList->AddRect(toScreen({0.0f, 0.0f}), toScreen({1.0f, 1.0f}), IM_COL32(255, 255, 255, 110));
+        // UV のグリッド（マテリアルの 2D ビューと同じ）。UV の整数に線、0 を通る線だけ濃く、端に数字。
+        graphui::DrawUvGridLines(drawList, origin, tile, areaMin, areaMax);
 
         // メッシュの UV。ピースの種類ごとに色を変えて薄く塗り、三角形の辺を引く。
         for (const mesh::Piece& piece : layer->mesh.pieces) {
@@ -1941,8 +2217,9 @@ void Application::DrawTopDownView(const ImVec2& areaMin, const ImVec2& areaMax) 
         view.hovered = hovered;
         hover = HandlePathEdit(*editNode, view);
     }
-    // 空をドラッグ（か中ボタン）で視点を動かす。頂点を掴んでいる間は動かさない。
-    if (active && !m_pathDragging && (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle))) {
+    // 中ボタンドラッグで視点を動かす。パスを編集していないときは、左ボタンのドラッグでも動かせる
+    // （編集中の左ボタンのドラッグは、矩形での選択に使う）。
+    if (active && (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) || (editNode == nullptr && ImGui::IsMouseDragging(ImGuiMouseButton_Left)))) {
         m_viewPan.x += io.MouseDelta.x;
         m_viewPan.y += io.MouseDelta.y;
         origin = {center.x + m_viewPan.x - m_structureCenter.x * scale, center.y + m_viewPan.y - m_structureCenter.y * scale};
@@ -2018,7 +2295,7 @@ void Application::DrawTopDownView(const ImVec2& areaMin, const ImVec2& areaMax) 
         };
         const float lineHeight = ImGui::GetTextLineHeight();
         const bool any = !meshes.empty() || path != nullptr || editNode != nullptr;
-        const bool pointSelected = editNode != nullptr && m_pathPoint >= 0;
+        const bool pointSelected = editNode != nullptr && !m_pathSelected.empty();
         char line[192];
         if (path != nullptr && meshes.empty()) {
             std::snprintf(line, sizeof(line), ui::Tr("%zu 点  %s", "%zu points  %s"), path->points.size(),
@@ -2030,7 +2307,7 @@ void Application::DrawTopDownView(const ImVec2& areaMin, const ImVec2& areaMax) 
         if (any && !pointSelected) overlayText({areaMin.x + pad, areaMax.y - pad - lineHeight}, line, textColor);
         if (!caption.empty()) overlayText({areaMin.x + pad, areaMax.y - pad - lineHeight * 2.0f - 2.0f}, caption.c_str(), textColor);
         if (!error.empty()) overlayText({areaMin.x + pad, areaMin.y + pad}, error.c_str(), ui::ErrorColor());
-        if (editNode != nullptr) DrawPathEditHints(drawList, *editNode, areaMin, areaMax, true);
+        if (editNode != nullptr) DrawPathEditHints(drawList, *editNode, areaMin, areaMax, false);
         if (!any && error.empty()) {
             const char* hint = (m_level == Level::Mesh)
                                    ? ui::Tr("出力ピンをクリック（またはノードをダブルクリック）すると、そのパスやメッシュが出ます。",

@@ -54,7 +54,8 @@ struct StartupOptions {
     bool showLightGizmo = false;            // --show-light-gizmo（スクリーンショットの確認用。ギズモを出したままにする）
     int previewShape = -1;                   // --preview-shape sphere|plane|cube（スクリーンショットの確認用）
     uint64_t enterNode = 0;                  // --enter-node <id>（スクリーンショットの確認用。プロジェクトのノードの中に入る）
-    int selectPathPoint = -1;                // --select-path-point <n>（スクリーンショットの確認用。パスの頂点を選ぶ。1 始まり）
+    bool wireframe = false;                  // --wireframe（スクリーンショットの確認用。3D ビューにワイヤーフレームを重ねる）
+    int selectPathPoint = -1;                // --select-path-point <n>（スクリーンショットの確認用。パスの頂点を選ぶ。1 始まり、0 なら全部）
 };
 
 // エディタ本体。UI はグラフモデル（m_graph）を編集するだけで、GPU は評価エンジン越しにしか触らない。
@@ -163,11 +164,27 @@ private:
         int insertIndex = 0;  // Ctrl + 空のクリックで足す頂点が入る場所
         bool onGround = false;
         graph::Point2 preview = {0.0f, 0.0f};  // 足す頂点の位置（吸着した後）
+        // 移動ギズモ（選んだ頂点の重心に置く）。軸は 0 = X、1 = Z。gizmoPart は載っている（掴んでいる）部品で、2 は平面。
+        bool gizmoValid = false;
+        bool gizmoPlane = false;  // 中央の平面のハンドルを出す（頂点が 2 つ以上のとき）
+        graph::Point2 gizmoWorld = {0.0f, 0.0f};
+        ImVec2 gizmoCenter = {0.0f, 0.0f};
+        bool gizmoAxisValid[2] = {false, false};
+        ImVec2 gizmoDirection[2] = {};
+        ImVec2 gizmoTip[2] = {};
+        float gizmoPixelsPerMeter[2] = {1.0f, 1.0f};
+        int gizmoPart = -1;
+        // 矩形での選択。
+        bool boxActive = false;
+        ImVec2 boxMin = {0.0f, 0.0f};
+        ImVec2 boxMax = {0.0f, 0.0f};
     };
     graph::Node* PathEditNode();
     PathEditHover HandlePathEdit(graph::Node& node, const PathEditView& view);
     void DrawPathEditOverlay(ImDrawList* drawList, const graph::Node& node, const PathEditView& view, const PathEditHover& hover);
-    void DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool showPoint);
+    void DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool in3d);
+    // 3D ビューのワイヤーフレーム（メッシュの上に、黒い線で三角形の辺を重ねる）。
+    void DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
     void HandlePathEditIn3d(const ImVec2& areaMin, const ImVec2& areaMax);
     void DrawPathEditIn3d(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
     // メッシュの階層で表示中の出力を、3D ビューと UV の表示に出せる形にする。
@@ -291,6 +308,7 @@ private:
     engine::AssetPreview m_assetPreview;
     engine::PreviewSettings m_assetViewSettings;
     bool m_view3dAsset = true;  // マテリアルの階層で、アセットに貼った表示にする
+    bool m_assetWireframe = false;  // アセットの表示に、三角形の辺を黒い線で重ねる
     // プロジェクトのグラフのパネル
     ax::NodeEditor::EditorContext* m_projectEditor = nullptr;
     std::vector<uint64_t> m_projectNodesToPlace;
@@ -327,8 +345,23 @@ private:
     PathEditHover m_path3dHover;
     // パスの編集（真上からのビューと 3D ビューで、パスノードの頂点を動かす）。
     uint64_t m_pathEditNode = 0;  // 編集しているパスノード
-    int m_pathPoint = -1;         // 選んだ頂点の番号（-1 なら無し）
-    bool m_pathDragging = false;  // 頂点を掴んでいる
+    std::vector<int> m_pathSelected;  // 選んだ頂点の番号（複数）
+    int m_pathPoint = -1;         // 最後に選んだ頂点（Ctrl + クリックで足す頂点の起点。-1 なら無し）
+    bool m_pathDragging = false;  // 頂点かギズモを掴んでいる
+    // 掴んだ時点の、選んだ頂点の位置（m_pathSelected と同じ並び）と、掴んだ頂点がその何番目か。
+    std::vector<graph::Point2> m_pathDragStart;
+    int m_pathGrabbed = -1;
+    // 矩形での選択。空を押してから、動かすまでは「保留」。
+    bool m_pathBoxPending = false;
+    bool m_pathBoxActive = false;
+    bool m_pathBoxAdditive = false;
+    ImVec2 m_pathBoxStart = {0.0f, 0.0f};
+    // 掴んでいるギズモの部品（0 = X、1 = Z、2 = 平面、-1 = 無し）と、掴んだ時点の投影。
+    int m_pathGizmoPart = -1;
+    ImVec2 m_pathGizmoPress = {0.0f, 0.0f};
+    ImVec2 m_pathGizmoDirection = {1.0f, 0.0f};
+    float m_pathGizmoMetersPerPixel = 0.0f;
+    graph::Point2 m_pathGizmoPressWorld = {0.0f, 0.0f};
     int m_pathMenuPoint = -1;     // 右クリックのメニューを開いた頂点と線
     int m_pathMenuSegment = -1;
     graph::Point2 m_pathMenuPosition = {0.0f, 0.0f};

@@ -56,7 +56,7 @@ void Shade(const RasterMaterial* material, float u, float v, Point2 tangent, flo
 
 }  // namespace
 
-RasterImage MakeLayoutChecker(const graph::MaterialLayout& layout, graph::TextureSize size) {
+RasterImage MakeLayoutChecker(const graph::MaterialLayout& layout, graph::TextureSize size, const RasterImage* fillImage) {
     const uint32_t longSide = std::max(std::max(size.width, size.height), 1u);
     RasterImage image;
     image.width = std::max(16u, size.width * 1024u / longSide);
@@ -88,6 +88,13 @@ RasterImage MakeLayoutChecker(const graph::MaterialLayout& layout, graph::Textur
                     color = region.color;
                 }
             }
+            float* out = &image.rgba[(static_cast<size_t>(y) * image.width + x) * 4];
+            // 区画の外（塗り）には UV チェッカーの画像を貼る。
+            if (rect == &whole && fillImage != nullptr && fillImage->IsValid()) {
+                Sample(*fillImage, u, v, out);
+                out[3] = 1.0f;
+                continue;
+            }
             // 区画の中の位置（0〜1）と、ピクセルで正方形になる升目（区画の短い辺を 4 つに割る）。
             const float localU = (u - rect->x) / rect->width, localV = (v - rect->y) / rect->height;
             const float pixelsU = rect->width * static_cast<float>(image.width), pixelsV = rect->height * static_cast<float>(image.height);
@@ -95,13 +102,9 @@ RasterImage MakeLayoutChecker(const graph::MaterialLayout& layout, graph::Textur
             const int cellX = static_cast<int>(localU * pixelsU / cell), cellY = static_cast<int>(localV * pixelsV / cell);
             float shade = (((cellX + cellY) & 1) != 0) ? 0.66f : 1.0f;
             shade *= 0.55f + 0.45f * localU;
-            float* out = &image.rgba[(static_cast<size_t>(y) * image.width + x) * 4];
             for (int c = 0; c < 3; ++c) out[c] = color[c] * shade;
-            if (cellX == 0 && cellY == 0) {
+            if (rect != &whole && cellX == 0 && cellY == 0) {
                 for (int c = 0; c < 3; ++c) out[c] = std::min(1.0f, out[c] * 1.5f + 0.25f);
-            }
-            if (localV < 0.10f) {
-                for (int c = 0; c < 3; ++c) out[c] = out[c] * 0.3f + 0.7f;
             }
             out[3] = 1.0f;
         }

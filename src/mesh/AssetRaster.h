@@ -28,12 +28,12 @@ struct RasterMaterial {
 };
 
 // 区画の配置を確かめるための絵。区画ごとに色を変え、向きが分かるようにする。
-//   色:         塗り（区画の外）は灰、辺は青、外角は橙、内角は赤紫、始端は緑、終端は黄
+//   色:         辺は青、外角は橙、内角は赤紫、始端は緑、終端は黄
 //   明るさ:     u が増える向きへ明るくなる
-//   白い帯:     v = 0 の側（帯の外側）
 //   明るい升目: u = 0, v = 0 の隅
+// 区画の外（塗り）には fillImage（UV チェッカーの画像）を貼る。null なら灰色の市松。
 // size はマップの大きさ（縦横比だけを使う）。絵の長い辺は 1024 px。
-RasterImage MakeLayoutChecker(const graph::MaterialLayout& layout, graph::TextureSize size);
+RasterImage MakeLayoutChecker(const graph::MaterialLayout& layout, graph::TextureSize size, const RasterImage* fillImage = nullptr);
 
 struct RasterOptions {
     // 絵の長い辺（ピクセル）。

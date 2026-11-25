@@ -57,6 +57,10 @@ struct AssetPreviewScene {
     float centerX = 0.0f;
     float centerZ = 0.0f;
     float halfExtent = 1.0f;
+    // UV チェッカーの画像（assets/textures/uv_checker.png）の SRV。区画の確認用の絵で、区画の外（塗り）に貼る。
+    // 無ければ灰色の市松になる。
+    bool hasCheckerTexture = false;
+    uint32_t checkerTexture = 0;
     // 下地。無ければ単色の地面に 1 m の格子。
     bool hasGround = false;
     MaterialBinding ground;

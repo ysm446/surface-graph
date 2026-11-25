@@ -284,6 +284,22 @@ bool TrimRun(std::vector<Point2>& run, float start, float end) {
 
 }  // namespace
 
+Mesh MergeMeshes(const std::vector<const Mesh*>& meshes) {
+    Mesh result;
+    for (const Mesh* mesh : meshes) {
+        if (mesh == nullptr) continue;
+        const uint32_t vertexOffset = static_cast<uint32_t>(result.vertices.size());
+        const uint32_t indexOffset = static_cast<uint32_t>(result.indices.size());
+        result.vertices.insert(result.vertices.end(), mesh->vertices.begin(), mesh->vertices.end());
+        for (const uint32_t index : mesh->indices) result.indices.push_back(index + vertexOffset);
+        for (Piece piece : mesh->pieces) {
+            piece.firstIndex += indexOffset;
+            result.pieces.push_back(piece);
+        }
+    }
+    return result;
+}
+
 Path MakeRectPath(float width, float height) {
     const float x = width * 0.5f;
     const float y = height * 0.5f;

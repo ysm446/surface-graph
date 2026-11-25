@@ -1,9 +1,12 @@
 #include "app/Application.h"
 
+#include "app/GraphPanelShared.h"
 #include "core/FileDialog.h"
 #include "core/PathUtf8.h"
 #include "ui/Localization.h"
 #include "ui/UiStyle.h"
+
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
@@ -523,6 +526,13 @@ void DrawUvGrid(ImDrawList* drawList, const ImVec2& zero, const ImVec2& tileSize
 
 }  // namespace
 
+// プロジェクトとメッシュの階層の UV の表示（ProjectPanel.cpp）も、同じグリッドを使う。
+namespace graphui {
+void DrawUvGridLines(ImDrawList* drawList, const ImVec2& zero, const ImVec2& tileSize, const ImVec2& areaMin, const ImVec2& areaMax) {
+    DrawUvGrid(drawList, zero, tileSize, areaMin, areaMax);
+}
+}  // namespace graphui
+
 void Application::DrawView2dPanel() {
     if (m_focusDefaultTabs > 0) ImGui::SetNextWindowFocus();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -908,6 +918,11 @@ void Application::DrawView3dPanel() {
     if (ImGui::BeginPopup("##view3dSettings")) {
         const engine::PreviewSettings defaults;
         if (ui::BeginPropertyTable("View3dRows")) {
+            // ワイヤーフレームはアセットの表示だけ。
+            if (assetView) {
+                ui::PropertyBool(ui::Tr("ワイヤーフレーム", "Wireframe"), &m_assetWireframe, false,
+                                 ui::Tr("メッシュの上に、三角形の辺を黒い線で重ねる。", "Overlays the triangle edges as black lines on the meshes."));
+            }
             // タイルの数と視差は、球 / 平面の表示だけ（アセットの UV はメッシュが決め、デカールでは視差を使わない）。
             if (!assetView) {
                 ui::PropertyFloat(ui::Tr("タイル", "Tiling"), &settings.tiling, 0.5f, 8.0f, defaults.tiling,
@@ -930,11 +945,11 @@ void Application::DrawView3dPanel() {
             ui::PropertyBool(ui::Tr("空を表示", "Show Sky"), &settings.showSky, defaults.showSky,
                              ui::Tr("背景に、映り込みに使っている空を出す。", "Shows the sky used for reflections in the background."));
             ui::PropertyBool(ui::Tr("UV チェッカー", "UV Checker"), &settings.uvChecker, defaults.uvChecker,
-                             assetView ? ui::Tr("マテリアルの代わりに、区画の確認用の絵を貼る。灰は塗り、青は辺、橙は外角、赤紫は内角、"
-                                                "緑は始端、黄は終端。u が増える向きへ明るくなり、帯の外側に白い帯が出る。",
-                                                "Shows a layout checker instead of the materials. Gray: fill, blue: edge, orange: outer corner, "
-                                                "magenta: inner corner, green: start cap, yellow: end cap. It brightens along u, with a white "
-                                                "strip on the outer side of the band.")
+                             assetView ? ui::Tr("マテリアルの代わりに、確認用の絵を貼る。塗りには UV チェッカーの画像、帯には区画ごとの色"
+                                                "（青は辺、橙は外角、赤紫は内角、緑は始端、黄は終端。u が増える向きへ明るくなる）。",
+                                                "Shows checkers instead of the materials: the UV checker image on fills, and a color per region "
+                                                "on bands (blue: edge, orange: outer corner, magenta: inner corner, green: start cap, "
+                                                "yellow: end cap; brighter along u).")
                                        : ui::Tr("Albedo の代わりに確認用の格子の画像を貼る。UV の向きと繰り返しを確かめる。"
                                                 "法線・ラフネスなどグラフのマップは使わない（形状の UV を見るため）。",
                                                 "Shows a checker image instead of Albedo to check the UV direction and tiling. "
@@ -956,12 +971,28 @@ void Application::DrawView3dPanel() {
         ImGui::InvisibleButton("##view3dCanvas", areaSize,
                                ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
         const ImGuiIO& io = ImGui::GetIO();
+        // Alt は視点の操作に使う。ImGui は Alt を単独で離すとメニューバーへフォーカスを移すので、ここに載っている間は止める。
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetKeyOwner(ImGuiMod_Alt, ImGui::GetItemID());
         // メッシュグラフでパスノードを選んでいれば、ここで頂点を編集できる。頂点を掴んでいる間と、
         // Ctrl を押している間（頂点を足す）は、視点を動かさない。
         if (assetView) HandlePathEditIn3d(areaMin, areaMax);
         const bool editingPath = assetView && m_pathEditNode != 0 && (m_pathDragging || io.KeyCtrl);
+        // 視点の操作は DCC ツール（Maya など）に合わせる（ユーザー指定 2026-11-25）:
+        //   Alt + 左ドラッグ = 回す、Alt + 中ドラッグ（Alt なしでも）= パン、Alt + 右ドラッグ = 近づく・離れる。
+        // メッシュグラフの中では、Alt なしの左ボタンを編集（頂点を選ぶ・動かす）に空ける。
+        // ほかの階層では、これまでどおり Alt なしの左ドラッグでも回る。
+        const bool meshEditing = assetView && m_level == Level::Mesh;
+        const auto orbit = [&]() {
+            settings.yaw -= io.MouseDelta.x * 0.01f;
+            settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, assetView ? 0.03f : -1.5f, 1.5f);
+        };
         if (editingPath) {
             // 頂点の編集中。
+        } else if (ImGui::IsItemActive() && io.KeyAlt && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            orbit();
+        } else if (ImGui::IsItemActive() && io.KeyAlt && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+            // 右か上へ動かすと近づく（Maya と同じ向き）。
+            settings.distance = std::clamp(settings.distance * std::exp(-(io.MouseDelta.x - io.MouseDelta.y) * 0.005f), 1.2f, 20.0f);
         } else if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
             // 中ボタンドラッグでパン。掴んだ場所がマウスに付いてくる量（注視点の距離での 1 ピクセルの長さ）。
             const float unitsPerPixel = 2.0f * settings.distance * std::tan(engine::kPreviewFovY * 0.5f) / areaSize.y;
@@ -969,7 +1000,8 @@ void Application::DrawView3dPanel() {
             settings.panY = std::clamp(settings.panY + io.MouseDelta.y * unitsPerPixel, -10.0f, 10.0f);
         } else if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             const bool lightKey = ImGui::IsKeyDown(ImGuiKey_L) && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift;
-            if (lightKey || io.KeyShift) {
+            // メッシュグラフの中では Shift を「吸着しない」に使うので、ライトは L + ドラッグだけ。
+            if (lightKey || (io.KeyShift && !meshEditing)) {
                 // L + ドラッグでライトを回す（terrain-graph と同じ。Shift + ドラッグも同じ動き）。
                 // 方位角は一周を -π〜π に折り返す（表示設定のスライダーの範囲に合わせる）。
                 float yaw = settings.lightYaw + io.MouseDelta.x * kLightRadiansPerPixel;
@@ -980,9 +1012,8 @@ void Application::DrawView3dPanel() {
                 settings.lightPitch = std::clamp(settings.lightPitch - io.MouseDelta.y * kLightRadiansPerPixel, 0.05f, 1.5f);
                 // ギズモは、掴んでいる間と離した直後だけ出す。
                 m_lightGizmoUntil = ImGui::GetTime() + kLightGizmoFadeSeconds;
-            } else {
-                settings.yaw -= io.MouseDelta.x * 0.01f;
-                settings.pitch = std::clamp(settings.pitch + io.MouseDelta.y * 0.01f, assetView ? 0.03f : -1.5f, 1.5f);
+            } else if (!meshEditing) {
+                orbit();
             }
         }
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f) {
@@ -1007,6 +1038,8 @@ void Application::DrawView3dPanel() {
         } else {
             drawList->AddRectFilled(areaMin, areaMax, ImGui::GetColorU32(ImGuiCol_ChildBg));
         }
+        // ワイヤーフレームは絵のすぐ上、パスの頂点やギズモの下に重ねる。
+        DrawAssetWireframe(drawList, areaMin, areaMax);
         DrawPreviewLightGizmo(areaMin, areaMax);
         if (assetView) DrawPathEditIn3d(drawList, areaMin, areaMax);
     }

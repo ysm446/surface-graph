@@ -20,7 +20,8 @@ cbuffer DrawConstants : register(b0) {
     uint gColorMask;      // ビット i が立っていれば、そのマップは Color
     uint gNormalFormat;   // 0 DirectX / 1 OpenGL
     uint gFlags;          // ビット 0: 背景に空を出す / 1: 区画の確認用の絵を貼る / 2: 地面にマテリアルがある / 3: 単色で塗る
-    uint gReserved0;
+                          // / 4: gCheckerTexture がある
+    uint gCheckerTexture; // UV チェッカーの画像（assets/textures/uv_checker.png）の SRV。区画の外（塗り）に貼る
     uint4 gReserved1;
     uint4 gReserved2;
 };
@@ -203,18 +204,24 @@ bool InRegion(float2 uv, float4 region) {
 }
 
 // 区画の確認用の絵（src/mesh/AssetRaster.cpp の MakeLayoutChecker と同じ）。
-// 灰は塗り、青は辺、橙は外角、赤紫は内角、緑は始端、黄は終端。u が増える向きへ明るくなり、
-// v = 0 の側に白い帯、u = 0・v = 0 の隅に明るい升目が出る。
+// 区画の外（塗り）には UV チェッカーの画像を貼る（文字と数字で、向きとタイルの繰り返しが分かる）。
+// 区画の中は色分けする。青は辺、橙は外角、赤紫は内角、緑は始端、黄は終端。u が増える向きへ明るくなり、
+// u = 0・v = 0 の隅に明るい升目が出る。
 float3 LayoutChecker(float2 uv) {
     const float2 wrapped = frac(uv);
     float4 region = float4(0.0, 0.0, 1.0, 1.0);
     float3 color = float3(0.55, 0.58, 0.62);
     float divisions = 8.0;
-    if (InRegion(wrapped, gRegionEdge)) { region = gRegionEdge; color = float3(0.30, 0.62, 0.90); divisions = 4.0; }
-    if (InRegion(wrapped, gRegionOuter)) { region = gRegionOuter; color = float3(0.95, 0.55, 0.20); divisions = 4.0; }
-    if (InRegion(wrapped, gRegionInner)) { region = gRegionInner; color = float3(0.85, 0.30, 0.60); divisions = 4.0; }
-    if (InRegion(wrapped, gRegionStart)) { region = gRegionStart; color = float3(0.40, 0.80, 0.40); divisions = 4.0; }
-    if (InRegion(wrapped, gRegionEnd)) { region = gRegionEnd; color = float3(0.90, 0.85, 0.30); divisions = 4.0; }
+    bool inRegion = false;
+    if (InRegion(wrapped, gRegionEdge)) { region = gRegionEdge; color = float3(0.30, 0.62, 0.90); divisions = 4.0; inRegion = true; }
+    if (InRegion(wrapped, gRegionOuter)) { region = gRegionOuter; color = float3(0.95, 0.55, 0.20); divisions = 4.0; inRegion = true; }
+    if (InRegion(wrapped, gRegionInner)) { region = gRegionInner; color = float3(0.85, 0.30, 0.60); divisions = 4.0; inRegion = true; }
+    if (InRegion(wrapped, gRegionStart)) { region = gRegionStart; color = float3(0.40, 0.80, 0.40); divisions = 4.0; inRegion = true; }
+    if (InRegion(wrapped, gRegionEnd)) { region = gRegionEnd; color = float3(0.90, 0.85, 0.30); divisions = 4.0; inRegion = true; }
+    if (!inRegion && (gFlags & 16u) != 0u) {
+        Texture2D<float4> checker = ResourceDescriptorHeap[gCheckerTexture];
+        return checker.Sample(gAnisotropicWrap, uv).rgb;
+    }
     const float2 local = (wrapped - region.xy) / region.zw;
     const float2 pixels = region.zw * gTextureSize;
     const float cell = min(pixels.x, pixels.y) / divisions;
@@ -222,8 +229,7 @@ float3 LayoutChecker(float2 uv) {
     float shade = (((index.x + index.y) & 1) != 0) ? 0.66 : 1.0;
     shade *= 0.55 + 0.45 * local.x;
     color *= shade;
-    if (index.x == 0 && index.y == 0) color = min(1.0, color * 1.5 + 0.25);
-    if (local.y < 0.10) color = color * 0.3 + 0.7;
+    if (inRegion && index.x == 0 && index.y == 0) color = min(1.0, color * 1.5 + 0.25);
     return color;
 }
 

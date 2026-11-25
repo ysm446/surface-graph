@@ -20,4 +20,8 @@ ImVec4 PinColor(graph::PinType type);
 // キャンバスの背景（背景色と点の格子）。ed::Begin の直後に呼ぶ。
 void DrawCanvasDots(const ImVec2& screenMin, const ImVec2& screenMax);
 
+// 2D ビューの UV グリッド。UV の整数に線を引き、0 を通る線だけを濃くして、端に座標の数字を載せる。
+// zero は UV の (0, 0) の画面上の位置、tileSize は UV の 1 × 1 の大きさ。実装は Panels.cpp。
+void DrawUvGridLines(ImDrawList* drawList, const ImVec2& zero, const ImVec2& tileSize, const ImVec2& areaMin, const ImVec2& areaMax);
+
 }  // namespace sg::graphui

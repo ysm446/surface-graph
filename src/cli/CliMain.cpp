@@ -487,6 +487,15 @@ int CommandAsset(Gpu& gpu, const Options& options, const project::Project& proje
         return 1;
     }
 
+    // uv.png で塗りに貼る UV チェッカーの画像（エディタの 3D ビューと同じもの）。
+    mesh::RasterImage fillChecker;
+    if (LdrImage file; LoadLdrImage(std::filesystem::path(SG_ASSET_DIR) / "textures" / "uv_checker.png", file)) {
+        fillChecker.width = file.width;
+        fillChecker.height = file.height;
+        fillChecker.rgba.resize(file.pixels.size());
+        for (size_t i = 0; i < file.pixels.size(); ++i) fillChecker.rgba[i] = static_cast<float>(file.pixels[i]) / 255.0f;
+    }
+
     // 確認用の絵に貼るマップを読み戻す。
     std::vector<mesh::RasterMaterial> rasterMaterials;
     for (const mesh::AssetLayer& layer : asset.layers) {
@@ -499,7 +508,7 @@ int CommandAsset(Gpu& gpu, const Options& options, const project::Project& proje
             return 1;
         }
         rasterMaterials.push_back(ToRasterMaterial(material.id, maps));
-        rasterMaterials.back().checker = mesh::MakeLayoutChecker(material.graph.layout, graph::GraphSize(material.graph));
+        rasterMaterials.back().checker = mesh::MakeLayoutChecker(material.graph.layout, graph::GraphSize(material.graph), &fillChecker);
     }
 
     // 下地は確認用の絵にだけ使い、書き出さない。

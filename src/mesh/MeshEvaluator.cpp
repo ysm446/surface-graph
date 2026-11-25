@@ -57,9 +57,12 @@ void HashParam(Hasher& hasher, const graph::ParamDef& def, const graph::ParamVal
 
 // ノードを 1 つ計算する。inputs は入力ピンの順で、繋がっていなければ null。
 void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inputs, NodeResult& result) {
-    // 入力が要るノードは、繋がっていて、上流が成功していること。
+    const std::string_view type = node.def->type;
+    // 入力が要るノードは、繋がっていて、上流が成功していること。マージだけは、繋いでいない入力を飛ばす。
+    const bool optionalInputs = (type == "mesh.merge");
     for (const NodeResult* input : inputs) {
         if (input == nullptr) {
+            if (optionalInputs) continue;
             result.error = ui::Tr("入力が繋がっていません", "An input is not connected");
             return;
         }
@@ -69,7 +72,6 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
         }
     }
 
-    const std::string_view type = node.def->type;
     const std::vector<graph::ParamValue>& params = node.params;
     if (type == "path.points") {
         // 置いた頂点は制御点。曲線なら、それをなぞった折れ線にしてから下流へ渡す。
@@ -97,6 +99,17 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
         options.overlap = params[kStrokeOverlap].f[0];
         Mesh mesh;
         if (BuildStroke(*inputs[0]->path, options, mesh, result.error)) result.mesh = std::make_shared<const Mesh>(std::move(mesh));
+    } else if (type == "mesh.merge") {
+        // 入力ピンの順に重ねる（A が一番下）。1 つも繋がっていなければエラー。
+        std::vector<const Mesh*> meshes;
+        for (const NodeResult* input : inputs) {
+            if (input != nullptr && input->mesh != nullptr) meshes.push_back(input->mesh.get());
+        }
+        if (meshes.empty()) {
+            result.error = ui::Tr("入力が繋がっていません", "An input is not connected");
+        } else {
+            result.mesh = std::make_shared<const Mesh>(MergeMeshes(meshes));
+        }
     } else if (type == "mesh.output") {
         result.mesh = inputs[0]->mesh;
     } else {
