@@ -933,9 +933,12 @@ void Application::DrawView3dPanel() {
                                  ui::Tr("メッシュの上に、三角形の辺を黒い線で重ねる。", "Overlays the triangle edges as black lines on the meshes."));
             }
             if (assetView) {
-                ui::PropertyBool(ui::Tr("下地を表示", "Show Ground"), &m_assetShowGround, true,
-                                 ui::Tr("地面に、プロジェクトの下地のマテリアルを敷く。切ると、単色の地面になる。",
-                                        "Shows the ground material of the project on the ground. When off, the ground is a plain color."));
+                ui::PropertyBool(ui::Tr("地面を表示", "Show Ground"), &m_assetShowGround, true,
+                                 ui::Tr("地面（下地のマテリアルか、単色の地面）を描く。切ると、地面を描かず、背景の上に貼り物だけを出す。",
+                                        "Draws the ground (the ground material, or a plain ground). When off, only the asset is drawn over the background."));
+                ui::PropertyBool(ui::Tr("グリッドを表示", "Show Grid"), &m_assetShowGrid, true,
+                                 ui::Tr("1 m の格子を描く。地面を切っていても、線だけが背景の上に出る。",
+                                        "Draws a 1 m grid. With the ground off, only the lines are drawn over the background."));
             }
             // メッシュの階層は、マテリアルを割り当てる前の段階。既定ではマテリアルなしで出す。
             if (assetView && m_level == Level::Mesh) {

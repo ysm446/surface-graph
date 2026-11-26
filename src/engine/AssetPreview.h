@@ -62,6 +62,10 @@ struct AssetPreviewScene {
     bool hasCheckerTexture = false;
     uint32_t checkerTexture = 0;
     // 下地。無ければ単色の地面に 1 m の格子。
+    // 地面（下地のマテリアルか、単色の地面）を描くか。偽なら、背景の上にレイヤーだけを描く。
+    bool showGround = true;
+    // 1 m の格子を描くか。地面を描かないときは、格子の線だけを背景の上に重ねる。
+    bool showGrid = true;
     bool hasGround = false;
     MaterialBinding ground;
     float groundTileU = 1.0f;  // 1 タイルの大きさ（メートル）

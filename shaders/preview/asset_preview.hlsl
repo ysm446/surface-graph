@@ -19,7 +19,7 @@ cbuffer DrawConstants : register(b0) {
     uint gConnected;      // ビット i が立っていれば MaterialChannel i が繋がっている
     uint gColorMask;      // ビット i が立っていれば、そのマップは Color
     uint gNormalFormat;   // 0 DirectX / 1 OpenGL
-    uint gFlags;          // ビット 0: 背景に空を出す / 1: 区画の確認用の絵を貼る / 2: 地面にマテリアルがある / 3: 単色で塗る
+    uint gFlags;          // ビット 0: 背景に空を出す / 1: 区画の確認用の絵を貼る / 2: 地面にマテリアルがある / 3: 単色で塗る / 5: 格子を描く / 6: 地面を描かない（格子だけ）
                           // / 4: gCheckerTexture がある
     uint gCheckerTexture; // UV チェッカーの画像（assets/textures/uv_checker.png）の SRV。区画の外（塗り）に貼る
     uint4 gReserved1;
@@ -156,22 +156,34 @@ GroundVertex VSGround(uint id : SV_VertexID) {
 float4 PSGround(GroundVertex input) : SV_Target0 {
     const float3 view = normalize(gCameraPosition - input.scenePosition);
     const float2 world = input.scenePosition.xz / gInvScale + gCenter.xz;
+    // 1 m の格子。原点を通る線は少し明るくする。ビット 5 が立っているときだけ描く。
+    const float2 cell = abs(frac(world + 0.5) - 0.5);
+    const float2 width = max(fwidth(world), 1e-5);
+    const float2 line2 = 1.0 - smoothstep(width * 0.75, width * 1.75, cell);
+    const float2 axis2 = 1.0 - smoothstep(width * 1.0, width * 2.5, abs(world));
+    const bool showGrid = (gFlags & 32u) != 0u;
+    const float gridLine = showGrid ? saturate(max(line2.x, line2.y)) : 0.0;
+    const float gridAxis = showGrid ? saturate(max(axis2.x, axis2.y)) : 0.0;
+    // 遠くはテクスチャが潰れてちらつくので、背景へ溶かす。
+    const float fade = smoothstep(kGroundFadeStart, kGroundFadeEnd, length(input.scenePosition.xz));
+    if ((gFlags & 64u) != 0u) {
+        // 地面を描かない。格子の線だけを、背景の上に重ねる（照明は当てない）。
+        const float amount = max(gridLine, gridAxis);
+        const float3 lineColor = lerp(float3(0.22, 0.22, 0.235), float3(0.42, 0.42, 0.45), gridAxis);
+        return float4(lineColor, amount * (1.0 - fade));
+    }
     float3 color;
     if ((gFlags & 4u) != 0u && (gFlags & 2u) == 0u) {
         float opacity;
         color = ShadeMaterial(world / gGroundTile, float3(1.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), view, opacity);
+        // 下地のマテリアルの上には、格子を薄く重ねる。
+        color = lerp(color, float3(0.5, 0.5, 0.5), max(gridLine * 0.25, gridAxis * 0.45));
     } else {
-        // 単色の地面に 1 m の格子。原点を通る線は少し明るくする。
-        const float2 cell = abs(frac(world + 0.5) - 0.5);
-        const float2 width = max(fwidth(world), 1e-5);
-        const float2 line2 = 1.0 - smoothstep(width * 0.75, width * 1.75, cell);
-        const float2 axis2 = 1.0 - smoothstep(width * 1.0, width * 2.5, abs(world));
-        float albedo = lerp(0.10, 0.17, saturate(max(line2.x, line2.y)));
-        albedo = lerp(albedo, 0.28, saturate(max(axis2.x, axis2.y)));
+        // 単色の地面。
+        float albedo = lerp(0.10, 0.17, gridLine);
+        albedo = lerp(albedo, 0.28, gridAxis);
         color = ShadeSurface(albedo, 0.9, 0.0, 1.0, float3(0.0, 1.0, 0.0), view, Light());
     }
-    // 遠くはテクスチャが潰れてちらつくので、背景へ溶かす。
-    const float fade = smoothstep(kGroundFadeStart, kGroundFadeEnd, length(input.scenePosition.xz));
     return Output(lerp(color, Background(-view), fade), 1.0);
 }
 

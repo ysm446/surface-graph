@@ -37,6 +37,8 @@ constexpr uint32_t kFlagChecker = 2u;
 constexpr uint32_t kFlagGroundMaterial = 4u;
 constexpr uint32_t kFlagSolid = 8u;
 constexpr uint32_t kFlagCheckerTexture = 16u;
+constexpr uint32_t kFlagGrid = 32u;
+constexpr uint32_t kFlagGroundHidden = 64u;
 
 // b1。HLSL の cbuffer の詰め方（float3 + float で 16 バイト）に合わせる。
 struct SceneParams {
@@ -163,13 +165,14 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
     pipelineDesc.vertexEntry = L"VSBackground";
     pipelineDesc.pixelEntry = L"PSBackground";
     ID3D12PipelineState* backgroundPipeline = m_pipelines->GetGraphics(pipelineDesc);
+    // 地面も重ねて描く（地面を描かずに格子だけを出すとき、線の無い所を透かす）。
     pipelineDesc.vertexEntry = L"VSGround";
     pipelineDesc.pixelEntry = L"PSGround";
+    pipelineDesc.alphaBlend = true;
     ID3D12PipelineState* groundPipeline = m_pipelines->GetGraphics(pipelineDesc);
     pipelineDesc.vertexEntry = L"VSLayer";
     pipelineDesc.pixelEntry = L"PSLayer";
     pipelineDesc.layout = rhi::VertexLayout::Decal;
-    pipelineDesc.alphaBlend = true;
     ID3D12PipelineState* layerPipeline = m_pipelines->GetGraphics(pipelineDesc);
     if (backgroundPipeline == nullptr || groundPipeline == nullptr || layerPipeline == nullptr) return;
 
@@ -242,8 +245,10 @@ void AssetPreview::Render(ID3D12GraphicsCommandList* commandList, const AssetPre
         StoreBinding(constants, scene.ground);
         constants.flags |= kFlagGroundMaterial;
     }
+    if (scene.showGrid) constants.flags |= kFlagGrid;
+    if (!scene.showGround) constants.flags |= kFlagGroundHidden;
     // 視点が地面の下にあるときは、地面を描かない（下から、貼り物の裏面だけが見える）。
-    if (position.y >= 0.0f) {
+    if ((scene.showGround || scene.showGrid) && position.y >= 0.0f) {
         commandList->SetPipelineState(groundPipeline);
         commandList->SetGraphicsRoot32BitConstants(0, rhi::kRootConstantCount, &constants, 0);
         commandList->DrawInstanced(6, 1, 0, 0);

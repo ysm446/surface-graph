@@ -168,6 +168,7 @@ bool Application::Initialize(const StartupOptions& options) {
     if (options.uvChecker) m_previewSettings.uvChecker = m_assetViewSettings.uvChecker = true;
     if (options.wireframe) m_assetWireframe = true;
     if (options.noGround) m_assetShowGround = false;
+    if (options.noGrid) m_assetShowGrid = false;
     if (options.meshMaterial) m_meshShowMaterial = true;
     if (options.hasViewPitch) m_assetViewSettings.pitch = options.viewPitch;
     if (options.viewGrid) m_viewGrid = true;
