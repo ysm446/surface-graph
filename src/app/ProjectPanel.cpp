@@ -92,15 +92,49 @@ project::Node* FindAssetNode(project::Project& project) {
     return nullptr;
 }
 
-// どのマテリアルノードからも、下地からも使われていないマテリアルを表から外す。
+// プロジェクトにあるマテリアルは、必ずノードとしてグラフに置く（ユーザー指定 2026-11-26。グラフに見えない
+// マテリアルがあると、どこにあるのか分からない）。下の 2 つで、その状態を保つ。
+
+// どのマテリアルノードからも指されていないマテリアルを表から外す。下地に使っていても外し、下地は「なし」に戻す。
 void SweepUnusedMaterials(project::Project& project) {
     std::erase_if(project.materials, [&](const project::Material& material) {
-        if (material.id == project.ground) return false;
         for (const project::Node& node : project.nodes) {
             if (node.kind == project::NodeKind::Material && node.material == material.id) return false;
         }
         return true;
     });
+    if (project.ground != 0 && project.FindMaterial(project.ground) == nullptr) project.ground = 0;
+}
+
+// ノードの無いマテリアル（古いファイルや、手で書いたファイルの、下地だけに使っているマテリアルなど）に、
+// どこにも繋がないマテリアルノードを足す。足した数を返す。
+size_t AddMissingMaterialNodes(project::Project& project) {
+    float left = 0.0f, bottom = 0.0f;
+    bool any = false;
+    for (const project::Node& node : project.nodes) {
+        left = any ? std::min(left, node.pos[0]) : node.pos[0];
+        bottom = any ? std::max(bottom, node.pos[1]) : node.pos[1];
+        any = true;
+    }
+    size_t added = 0;
+    for (const project::Material& material : project.materials) {
+        const bool hasNode = std::any_of(project.nodes.begin(), project.nodes.end(), [&](const project::Node& node) {
+            return node.kind == project::NodeKind::Material && node.material == material.id;
+        });
+        if (hasNode) continue;
+        // いちばん下のノードの、さらに下へ並べる（ノードの高さは、サムネイルを入れておよそ 300）。
+        bottom += any ? 400.0f : 0.0f;
+        any = true;
+        project::Node node;
+        node.id = project.nextId++;
+        node.kind = project::NodeKind::Material;
+        node.material = material.id;
+        node.pos[0] = left;
+        node.pos[1] = bottom;
+        project.nodes.push_back(std::move(node));
+        ++added;
+    }
+    return added;
 }
 
 std::string UniqueMaterialName(const project::Project& project, const std::string& base) {
@@ -172,6 +206,10 @@ bool Application::OpenProject(const std::filesystem::path& path) {
         return false;
     }
     for (const std::string& warning : warnings) SG_LOG_WARN("%s", warning.c_str());
+    if (const size_t added = AddMissingMaterialNodes(loaded); added > 0) {
+        SG_LOG_INFO(ui::Tr("ノードの無いマテリアルに、マテリアルノードを足しました（%zu 個）", "Added material nodes for materials without one (%zu)"),
+                    added);
+    }
     m_project = std::move(loaded);
     m_level = Level::Project;
     m_graph = graph::Graph{};
