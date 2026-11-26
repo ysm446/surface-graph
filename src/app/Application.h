@@ -194,8 +194,10 @@ private:
     void DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool in3d);
     // 3D ビューのワイヤーフレーム（メッシュの上に、黒い線で三角形の辺を重ねる）。
     void DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
-    // 3D ビューの右上の、向きのギズモ（3 軸）。クリックで「真上」と「パース」を切り替える。
-    // ViewGizmoHot は、カーソルがギズモの上にあって、クリックを受けられる状態か（ほかの操作のドラッグ中でない）。
+    // 3D ビューの左下の、座標軸のギズモ（視点に合わせて動く。terrain-graph のビューポートと同じ見た目）。
+    void DrawAxisGizmo(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
+    // 3D ビューの右上の、「パース」と「真上」を切り替えるボタン。アイコンは 3 軸の絵で、視点に合わせては動かない。
+    // ViewGizmoHot は、カーソルがボタンの上にあって、クリックを受けられる状態か（ほかの操作のドラッグ中でない）。
     bool ViewGizmoHot(const ImVec2& areaMin, const ImVec2& areaMax) const;
     void ToggleTopView();
     void DrawViewGizmo(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);

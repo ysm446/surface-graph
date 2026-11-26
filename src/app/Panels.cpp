@@ -1060,6 +1060,7 @@ void Application::DrawView3dPanel() {
         DrawPreviewLightGizmo(areaMin, areaMax);
         if (assetView) DrawPathEditIn3d(drawList, areaMin, areaMax);
         DrawViewGizmo(drawList, areaMin, areaMax);
+        DrawAxisGizmo(drawList, areaMin, areaMax);
     }
     ImGui::End();
 }

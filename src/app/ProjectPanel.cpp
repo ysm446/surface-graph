@@ -2144,10 +2144,10 @@ void Application::DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin
 
 namespace {
 
-// ギズモの中心と半径（画面上）。3D ビューの右上の隅に置く。
+// 「パース / 真上」のボタンの中心（画面上）。3D ビューの右上の隅に置く。
 ImVec2 ViewGizmoCenter(const ImVec2& areaMin, const ImVec2& areaMax) {
-    const float radius = ui::Scaled(34.0f);
-    const float margin = ui::Scaled(12.0f);
+    const float radius = ui::Scaled(20.0f);
+    const float margin = ui::Scaled(8.0f);
     return {areaMax.x - radius - margin, areaMin.y + radius + margin};
 }
 
@@ -2160,8 +2160,9 @@ bool Application::ViewGizmoHot(const ImVec2& areaMin, const ImVec2& areaMax) con
     if (!ShowsAssetView()) return false;
     const ImVec2 center = ViewGizmoCenter(areaMin, areaMax);
     const ImVec2 mouse = ImGui::GetMousePos();
-    const float radius = ui::Scaled(34.0f) + ui::Scaled(4.0f);
-    if (std::hypot(mouse.x - center.x, mouse.y - center.y) > radius) return false;
+    // 地は、一辺が半径の 2 倍の四角。
+    const float half = ui::Scaled(20.0f);
+    if (std::abs(mouse.x - center.x) > half || std::abs(mouse.y - center.y) > half) return false;
     // ほかの操作（頂点のドラッグ、矩形の選択、視点のドラッグ）の途中で上を通っただけなら、受けない。
     return ImGui::IsMouseClicked(ImGuiMouseButton_Left) || !ImGui::IsAnyMouseDown();
 }
@@ -2181,18 +2182,71 @@ void Application::ToggleTopView() {
     }
 }
 
+// 左下の座標軸のギズモ。terrain-graph の DrawAxisGizmo と同じ見た目（地は敷かず、線と、軸の色の文字。奥を向いた軸は薄くする）。
+void Application::DrawAxisGizmo(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax) {
+    if (!ShowsAssetView()) return;
+    const float radius = ui::Scaled(30.0f);
+    const float margin = ui::Scaled(16.0f);
+    const ImVec2 center = {areaMin.x + margin + radius, areaMax.y - margin - radius};
+    if (center.x + radius > areaMax.x || center.y - radius < areaMin.y) return;  // ビューが小さすぎる
+    const AssetCamera camera = MakeAssetCamera(m_assetViewSettings, areaMin, areaMax, m_assetFrameX, m_assetFrameZ, m_assetFrameHalf);
+
+    struct Axis {
+        ImVec2 tip;
+        float depth;  // 正なら奥
+        ImU32 color;
+        const char* label;
+    };
+    static const float kWorldAxes[3][3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    static const char* kLabels[3] = {"X", "Y", "Z"};
+    Axis axes[3];
+    for (int i = 0; i < 3; ++i) {
+        const float* a = kWorldAxes[i];
+        const float x = a[0] * camera.right[0] + a[1] * camera.right[1] + a[2] * camera.right[2];
+        const float y = a[0] * camera.up[0] + a[1] * camera.up[1] + a[2] * camera.up[2];
+        axes[i].depth = a[0] * camera.forward[0] + a[1] * camera.forward[1] + a[2] * camera.forward[2];
+        axes[i].tip = {center.x + x * radius, center.y - y * radius};
+        const ImU32 color = ui::TransformAxisColor(i);
+        // 奥を向いている軸は薄くして、手前と見分けられるようにする。
+        axes[i].color = (axes[i].depth > 0.0f) ? ((color & ~IM_COL32_A_MASK) | (110u << IM_COL32_A_SHIFT)) : color;
+        axes[i].label = kLabels[i];
+    }
+    std::sort(std::begin(axes), std::end(axes), [](const Axis& a, const Axis& b) { return a.depth > b.depth; });
+    // 文字を置くぶん、線を先端の手前で止める。
+    const float labelGap = ui::Scaled(7.0f);
+    for (const Axis& axis : axes) {
+        const ImVec2 delta = {axis.tip.x - center.x, axis.tip.y - center.y};
+        const float length = std::hypot(delta.x, delta.y);
+        // 真正面を向いた軸は線が点に潰れるので、文字だけを置く。
+        if (length > labelGap) {
+            drawList->AddLine(center, {axis.tip.x - delta.x / length * labelGap, axis.tip.y - delta.y / length * labelGap}, axis.color,
+                              ui::Scaled(1.6f));
+        }
+        const ImVec2 textSize = ImGui::CalcTextSize(axis.label);
+        drawList->AddText({axis.tip.x - textSize.x * 0.5f, axis.tip.y - textSize.y * 0.5f}, axis.color, axis.label);
+    }
+}
+
 void Application::DrawViewGizmo(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax) {
     if (!ShowsAssetView()) return;
-    const AssetCamera camera = MakeAssetCamera(m_assetViewSettings, areaMin, areaMax, m_assetFrameX, m_assetFrameZ, m_assetFrameHalf);
+    // アイコンは、いまの状態（パースか真上か）を表す決まった絵。視点に合わせては動かさない（動く軸は、左下の座標軸のギズモ）。
+    engine::PreviewSettings iconView = m_assetViewSettings;
+    iconView.yaw = IsTopView(m_assetViewSettings) ? 0.0f : 0.6f;
+    iconView.pitch = IsTopView(m_assetViewSettings) ? 1.5f : 0.5f;
+    const AssetCamera camera = MakeAssetCamera(iconView, areaMin, areaMax, m_assetFrameX, m_assetFrameZ, m_assetFrameHalf);
     const ImVec2 center = ViewGizmoCenter(areaMin, areaMax);
-    const float radius = ui::Scaled(34.0f);
-    const float length = radius - ui::Scaled(10.0f);
+    const float radius = ui::Scaled(20.0f);
+    // 矢印の長さ。軸の名前は書かない（色で分かる。ユーザー指定 2026-11-26）。
+    const float length = radius - ui::Scaled(5.0f);
     const bool hot = ViewGizmoHot(areaMin, areaMax);
     const bool top = IsTopView(m_assetViewSettings);
 
-    // 地の円。載せると少し明るくする（押せることが分かるように）。
-    drawList->AddCircleFilled(center, radius, ImGui::GetColorU32(ImGuiCol_PopupBg, hot ? 0.85f : 0.55f), 48);
-    if (hot) drawList->AddCircle(center, radius, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 48, ui::Scaled(1.0f));
+    // 地は、角の丸い四角。載せると少し明るくする（押せることが分かるように）。
+    const ImVec2 boxMin = {center.x - radius, center.y - radius};
+    const ImVec2 boxMax = {center.x + radius, center.y + radius};
+    const float rounding = ui::Scaled(5.0f);
+    drawList->AddRectFilled(boxMin, boxMax, ImGui::GetColorU32(ImGuiCol_PopupBg, hot ? 0.85f : 0.55f), rounding);
+    if (hot) drawList->AddRect(boxMin, boxMax, ImGui::GetColorU32(ImGuiCol_HeaderHovered), rounding, 0, ui::Scaled(1.0f));
 
     // 3 軸。画面の奥を向いているものから描く（手前の軸が上に重なる）。
     struct Axis {
@@ -2211,31 +2265,39 @@ void Application::DrawViewGizmo(ImDrawList* drawList, const ImVec2& areaMin, con
         axes[i].id = i;
     }
     std::sort(std::begin(axes), std::end(axes), [](const Axis& a, const Axis& b) { return a.depth > b.depth; });
-    static const char* kLabels[3] = {"X", "Y", "Z"};
-    const float dot = ui::Scaled(7.5f);
-    const float fontSize = ImGui::GetFontSize() * 0.75f;
+    const float headLength = ui::Scaled(6.5f);
+    const float headHalfWidth = ui::Scaled(3.2f);
+    // 絵をボタンの中央に収める。矢印の原点をボタンの中心に置くと、矢印の伸びる側へ絵が寄って見えるので、
+    // 絵の外接矩形（原点と、3 本の矢印の先）の中心を、ボタンの中心に合わせる。
+    ImVec2 extentMin = {0.0f, 0.0f}, extentMax = {0.0f, 0.0f};
+    for (const Axis& axis : axes) {
+        extentMin = {std::min(extentMin.x, axis.end.x), std::min(extentMin.y, axis.end.y)};
+        extentMax = {std::max(extentMax.x, axis.end.x), std::max(extentMax.y, axis.end.y)};
+    }
+    const ImVec2 origin = {center.x - (extentMin.x + extentMax.x) * 0.5f, center.y - (extentMin.y + extentMax.y) * 0.5f};
     for (const Axis& axis : axes) {
         const ImU32 color = ui::TransformAxisColor(axis.id);
-        const ImVec2 positive = {center.x + axis.end.x, center.y + axis.end.y};
-        const ImVec2 negative = {center.x - axis.end.x, center.y - axis.end.y};
-        // 負の側は、小さく薄い丸だけ。
-        drawList->AddCircleFilled(negative, ui::Scaled(3.0f), (color & 0x00ffffffu) | 0x66000000u, 16);
-        drawList->AddLine(center, positive, color, ui::Scaled(2.0f));
-        drawList->AddCircleFilled(positive, dot, color, 24);
-        const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, kLabels[axis.id]);
-        drawList->AddText(ImGui::GetFont(), fontSize, {positive.x - textSize.x * 0.5f, positive.y - textSize.y * 0.5f},
-                          ImGui::GetColorU32(ImGuiCol_PopupBg), kLabels[axis.id]);
+        const float screenLength = std::hypot(axis.end.x, axis.end.y);
+        if (screenLength < headLength) {
+            // 視線とほぼ同じ向きの軸（真上から見た Y など）。矢印にならないので、原点に丸を打つ。
+            drawList->AddCircleFilled(origin, ui::Scaled(3.2f), color, 16);
+            continue;
+        }
+        // 矢印。軸の正の向きへ、線と三角の矢じり。
+        const ImVec2 direction = {axis.end.x / screenLength, axis.end.y / screenLength};
+        const ImVec2 side = {-direction.y, direction.x};
+        const ImVec2 tip = {origin.x + axis.end.x, origin.y + axis.end.y};
+        const ImVec2 base = {tip.x - direction.x * headLength, tip.y - direction.y * headLength};
+        drawList->AddLine(origin, base, color, ui::Scaled(1.8f));
+        drawList->AddTriangleFilled(tip, {base.x + side.x * headHalfWidth, base.y + side.y * headHalfWidth},
+                                    {base.x - side.x * headHalfWidth, base.y - side.y * headHalfWidth}, color);
     }
 
-    // いまの向きの名前を、ギズモの下に小さく出す。
-    const char* label = top ? ui::Tr("真上", "Top") : ui::Tr("パース", "Persp");
-    const ImVec2 labelSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label);
-    const ImVec2 labelPos = {center.x - labelSize.x * 0.5f, center.y + radius + ui::Scaled(3.0f)};
-    drawList->AddText(ImGui::GetFont(), fontSize, {labelPos.x + 1.0f, labelPos.y + 1.0f}, IM_COL32(0, 0, 0, 160), label);
-    drawList->AddText(ImGui::GetFont(), fontSize, labelPos, ImGui::GetColorU32(hot ? ImGuiCol_Text : ImGuiCol_TextDisabled), label);
+    // 名前は書かない（アイコンだけ）。載せたときに、いまの状態と、押すとどうなるかを出す。
     if (hot) {
-        ImGui::SetTooltip("%s", top ? ui::Tr("クリックで、パース（斜めからの向き）へ戻す", "Click to return to the perspective view")
-                                    : ui::Tr("クリックで、真上から見る（X が右、Z が手前）", "Click to look straight down (X right, Z toward you)"));
+        ImGui::SetTooltip("%s", top ? ui::Tr("真上（クリックで、パースへ戻す）", "Top (click to return to the perspective view)")
+                                    : ui::Tr("パース（クリックで、真上から見る。X が右、Z が手前）",
+                                             "Perspective (click to look straight down; X right, Z toward you)"));
     }
 }
 
