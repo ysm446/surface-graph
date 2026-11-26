@@ -168,7 +168,6 @@ bool Application::Initialize(const StartupOptions& options) {
     if (options.uvChecker) m_previewSettings.uvChecker = m_assetViewSettings.uvChecker = true;
     if (options.wireframe) m_assetWireframe = true;
     if (options.meshMaterial) m_meshShowMaterial = true;
-    if (options.viewProjectNode != 0) m_projectView.node = options.viewProjectNode;
     if (options.hasViewPitch) m_assetViewSettings.pitch = options.viewPitch;
     if (options.viewGrid) m_viewGrid = true;
     if (options.viewTiling) m_viewTiling = true;
@@ -182,6 +181,8 @@ bool Application::Initialize(const StartupOptions& options) {
     NewProject();
     if (!options.graphPath.empty()) OpenDocument(options.graphPath);
     // --enter-node: プロジェクトのメッシュノードかマテリアルノードの中に入ってから撮る。
+    // プロジェクトを開いたあとで選ぶ（開くと、表示中の出力は消える）。
+    if (options.viewProjectNode != 0) m_projectView.node = options.viewProjectNode;
     if (InProject() && options.enterNode != 0) {
         if (const project::Node* node = m_project.FindNode(options.enterNode)) {
             if (node->kind == project::NodeKind::Mesh) RequestEnter(Level::Mesh, node->id);
@@ -713,6 +714,10 @@ void Application::ResetDocumentState() {
     m_asset = {};
     m_assetErrors.clear();
     m_assetDirty = true;
+    // 別のプロジェクトでコピーしたノードは持ち越さない（マテリアルの ID が、別のものを指してしまう）。
+    m_projectClipboard.clear();
+    m_projectClipboardLinks.clear();
+    m_projectView = {};
     m_hasPendingLevel = false;
     m_levelId = 0;
     m_projectSelected = 0;

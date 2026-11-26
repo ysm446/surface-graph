@@ -149,6 +149,9 @@ private:
     void DrawProjectNode(const project::Node& node);
     void DrawProjectAddPopup();
     void RemoveProjectNode(uint64_t id);
+    // プロジェクトのノード（メッシュ、マテリアル）のコピーと貼り付け。アセット出力は 1 つだけなので対象にしない。
+    void CopyProjectSelection();
+    void PasteProjectClipboard();
     void DrawProjectParameters();
     void DrawProjectSettings();
     // プロジェクトとメッシュの階層の 2D ビュー。UV（既定）か、真上から見たパスとメッシュ。
@@ -322,6 +325,16 @@ private:
     // プロジェクトのグラフのパネル
     ax::NodeEditor::EditorContext* m_projectEditor = nullptr;
     std::vector<uint64_t> m_projectNodesToPlace;
+    // コピーしたノード。コピーした時点の中身を持つ（元を消したあとでも貼れる）。この起動の中だけで使える。
+    struct ProjectClipboardItem {
+        project::Node node;
+        // マテリアルノードのとき、指していたマテリアルの写し（無ければ id が 0）。
+        project::Material material;
+    };
+    std::vector<ProjectClipboardItem> m_projectClipboard;
+    // コピーしたノードどうしを繋ぐリンク（fromNode / toNode は、m_projectClipboard の番号）。
+    std::vector<project::Link> m_projectClipboardLinks;
+    int m_projectPasteCount = 0;  // 同じコピーを続けて貼った回数（貼るたびに少しずらす）
     bool m_projectPlaceAll = true;
     int m_projectNavigateCountdown = 0;
     uint64_t m_projectSelected = 0;

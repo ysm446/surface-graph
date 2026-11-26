@@ -570,6 +570,86 @@ void Application::RemoveProjectNode(uint64_t id) {
     if (m_projectSelected == id) m_projectSelected = 0;
 }
 
+void Application::CopyProjectSelection() {
+    const int count = ed::GetSelectedObjectCount();
+    if (count <= 0) return;
+    std::vector<ed::NodeId> ids(static_cast<size_t>(count));
+    const int nodeCount = ed::GetSelectedNodes(ids.data(), count);
+    std::vector<ProjectClipboardItem> items;
+    for (int i = 0; i < nodeCount; ++i) {
+        const project::Node* node = m_project.FindNode(static_cast<uint64_t>(ids[i].Get()));
+        if (node == nullptr || node->kind == project::NodeKind::Asset) continue;
+        ProjectClipboardItem item;
+        item.node = *node;
+        // 位置は、エディタが持っているいまの位置（ドラッグした直後でも正しい）。
+        const ImVec2 position = ed::GetNodePosition(ids[i]);
+        if (position.x != FLT_MAX && position.y != FLT_MAX) {
+            item.node.pos[0] = position.x;
+            item.node.pos[1] = position.y;
+        }
+        if (node->kind == project::NodeKind::Material) {
+            if (const project::Material* material = m_project.FindMaterial(node->material)) item.material = *material;
+        }
+        items.push_back(std::move(item));
+    }
+    if (items.empty()) return;
+    m_projectClipboard = std::move(items);
+    m_projectClipboardLinks.clear();
+    m_projectPasteCount = 0;
+    // コピーしたノードどうしのリンクも持っていく（メッシュとマテリアルを一緒にコピーしたら、繋がったまま貼れる）。
+    for (const project::Link& link : m_project.links) {
+        int from = -1, to = -1;
+        for (size_t i = 0; i < m_projectClipboard.size(); ++i) {
+            if (m_projectClipboard[i].node.id == link.fromNode) from = static_cast<int>(i);
+            if (m_projectClipboard[i].node.id == link.toNode) to = static_cast<int>(i);
+        }
+        if (from < 0 || to < 0) continue;
+        project::Link copy = link;
+        copy.fromNode = static_cast<uint64_t>(from);
+        copy.toNode = static_cast<uint64_t>(to);
+        m_projectClipboardLinks.push_back(copy);
+    }
+}
+
+void Application::PasteProjectClipboard() {
+    if (m_projectClipboard.empty()) return;
+    ++m_projectPasteCount;
+    const float offset = 40.0f * static_cast<float>(m_projectPasteCount);
+    std::vector<uint64_t> added;
+    for (const ProjectClipboardItem& item : m_projectClipboard) {
+        project::Node node = item.node;
+        node.id = m_project.nextId++;
+        node.pos[0] += offset;
+        node.pos[1] += offset;
+        if (node.kind == project::NodeKind::Material) {
+            const project::Material* existing = m_project.FindMaterial(item.material.id);
+            if (item.material.id == 0) {
+                node.material = 0;
+            } else if (item.material.external && existing != nullptr) {
+                // 外部参照（.sgraph）は、同じファイルを指すノードを増やす（ファイルは複製しない）。
+                node.material = existing->id;
+            } else {
+                // 内包のマテリアルは、中身ごと複製して、別のマテリアルにする（片方を直しても、もう片方は変わらない）。
+                project::Material material = item.material;
+                material.id = m_project.nextId++;
+                material.name = UniqueMaterialName(m_project, item.material.name);
+                node.material = material.id;
+                m_project.materials.push_back(std::move(material));
+            }
+        }
+        m_project.nodes.push_back(std::move(node));
+        added.push_back(m_project.nodes.back().id);
+        m_projectNodesToPlace.push_back(added.back());
+    }
+    for (const project::Link& link : m_projectClipboardLinks) {
+        if (link.fromNode >= added.size() || link.toNode >= added.size()) continue;
+        m_project.links.push_back({m_project.nextId++, added[link.fromNode], link.fromOutput, added[link.toNode]});
+    }
+    m_projectSelected = added.back();
+    m_projectSelectPending = true;
+    PushStatus(LogLevel::Info, ui::Tr("ノードを貼り付けました", "Pasted nodes"));
+}
+
 uint64_t Application::AddEmbeddedMaterial(const std::string& name) {
     project::Material material;
     material.id = m_project.nextId++;
@@ -1062,7 +1142,7 @@ void Application::DrawProjectGraph() {
         }
     }
 
-    bool remove = false;
+    bool remove = false, copy = false, paste = false, duplicate = false;
     ed::Suspend();
     if (!hoveredError.empty()) {
         ImGui::BeginTooltip();
@@ -1081,11 +1161,24 @@ void Application::DrawProjectGraph() {
             else RequestEnter(Level::Material, node->material);
         }
         ImGui::Separator();
+        // アセット出力は 1 つだけなので、コピーも複製もできない。
+        const bool canCopy = node != nullptr && node->kind != project::NodeKind::Asset;
+        if (ImGui::MenuItem(ui::Tr("コピー", "Copy"), "Ctrl+C", false, canCopy)) copy = true;
+        if (ImGui::MenuItem(ui::Tr("複製", "Duplicate"), "Ctrl+D", false, canCopy)) duplicate = true;
         if (ImGui::MenuItem(ui::Tr("削除", "Delete"), "Delete")) remove = true;
         ImGui::EndPopup();
     }
     ed::Resume();
     if (remove) RemoveProjectNode(m_projectSelected);
+
+    // コピー / 貼り付け / 複製。キャンバスに載っていて、文字入力中でないときだけ。
+    if (canvasHovered && !textInput && io.KeyCtrl) {
+        if (ImGui::IsKeyPressed(ImGuiKey_C, false)) copy = true;
+        if (ImGui::IsKeyPressed(ImGuiKey_V, false)) paste = true;
+        if (ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate = true;
+    }
+    if (copy || duplicate) CopyProjectSelection();
+    if (paste || duplicate) PasteProjectClipboard();
 
     // 選択。1 つだけ選んでいるときに、パラメータの対象にする。
     if (!m_projectSelectPending) {
