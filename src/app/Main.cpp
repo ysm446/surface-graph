@@ -46,6 +46,8 @@ sg::StartupOptions ParseCommandLine() {
             options.viewProjectNode = static_cast<uint64_t>(::_wtoi64(argv[++i]));
         } else if (argument == L"--mesh-material") {
             options.meshMaterial = true;
+        } else if (argument == L"--no-ground") {
+            options.noGround = true;
         } else if (argument == L"--wireframe") {
             options.wireframe = true;
         } else if (argument == L"--select-path-point" && i + 1 < argc) {

@@ -932,6 +932,11 @@ void Application::DrawView3dPanel() {
                 ui::PropertyBool(ui::Tr("ワイヤーフレーム", "Wireframe"), &m_assetWireframe, false,
                                  ui::Tr("メッシュの上に、三角形の辺を黒い線で重ねる。", "Overlays the triangle edges as black lines on the meshes."));
             }
+            if (assetView) {
+                ui::PropertyBool(ui::Tr("下地を表示", "Show Ground"), &m_assetShowGround, true,
+                                 ui::Tr("地面に、プロジェクトの下地のマテリアルを敷く。切ると、単色の地面になる。",
+                                        "Shows the ground material of the project on the ground. When off, the ground is a plain color."));
+            }
             // メッシュの階層は、マテリアルを割り当てる前の段階。既定ではマテリアルなしで出す。
             if (assetView && m_level == Level::Mesh) {
                 ui::PropertyBool(ui::Tr("マテリアルを貼って表示", "Show with Materials"), &m_meshShowMaterial, false,

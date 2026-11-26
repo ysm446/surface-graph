@@ -57,6 +57,7 @@ struct StartupOptions {
     bool hasViewPitch = false;               // --view-pitch <ラジアン>（スクリーンショットの確認用。アセットの表示の視点の仰角。負で地面の下）
     float viewPitch = 0.0f;
     bool meshMaterial = false;               // --mesh-material（スクリーンショットの確認用。メッシュの階層で、マテリアルを貼って表示する）
+    bool noGround = false;                   // --no-ground（スクリーンショットの確認用。3D ビューに下地のマテリアルを出さない）
     bool wireframe = false;                  // --wireframe（スクリーンショットの確認用。3D ビューにワイヤーフレームを重ねる）
     uint64_t viewProjectNode = 0;            // --view-project-node <id>（スクリーンショットの確認用。プロジェクトのノードの出力を表示する）
     int selectPathPoint = -1;                // --select-path-point <n>（スクリーンショットの確認用。パスの頂点を選ぶ。1 始まり、0 なら全部）
@@ -316,6 +317,7 @@ private:
     engine::PreviewSettings m_assetViewSettings;
     bool m_view3dAsset = true;  // マテリアルの階層で、アセットに貼った表示にする
     bool m_assetWireframe = false;  // アセットの表示に、三角形の辺を黒い線で重ねる
+    bool m_assetShowGround = true;  // アセットの表示で、地面に下地のマテリアルを敷く（切ると、単色の地面）
     // メッシュの階層の 3D ビューに、アセット全体をマテリアル付きで出すか。既定は偽で、このメッシュグラフの結果だけを
     // マテリアルなし（区画の確認用の絵）で出す（メッシュの階層は、マテリアルを割り当てる前の段階なので）。
     bool m_meshShowMaterial = false;

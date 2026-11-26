@@ -472,7 +472,8 @@ void Application::RenderProjectView(ID3D12GraphicsCommandList* commandList) {
         scene.materials.push_back(item);
     }
     // 下地。重ねて見るためだけに使う。
-    if (const project::Material* ground = m_project.FindMaterial(m_project.ground); ground != nullptr && ground->loadError.empty()) {
+    if (const project::Material* ground = m_project.FindMaterial(m_project.ground);
+        m_assetShowGround && ground != nullptr && ground->loadError.empty()) {
         if (engine::Evaluator* evaluator = MaterialEvaluator(ground->id)) {
             const graph::TextureSize size = graph::GraphSize(ground->graph);
             const bool wide = size.width >= size.height;
