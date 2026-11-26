@@ -687,6 +687,21 @@ bool BuildFill(const Path& source, Mesh& out, std::string& error) {
 
 namespace {
 
+// 帯の結果の最後の確かめ。頂点に数でない値があるか、頂点が多すぎるなら、エラーにして結果を捨てる
+// （折り返したパスなど、壊れた形から変な値が出ても、下流や 3D ビューへ流さない）。
+bool CheckStrokeResult(Mesh& mesh, std::string& error) {
+    constexpr size_t kMaxVertices = 2000000;
+    bool ok = mesh.vertices.size() <= kMaxVertices;
+    for (size_t i = 0; ok && i < mesh.vertices.size(); ++i) {
+        const MeshVertex& vertex = mesh.vertices[i];
+        ok = std::isfinite(vertex.position.x) && std::isfinite(vertex.position.y) && std::isfinite(vertex.uv.x) && std::isfinite(vertex.uv.y);
+    }
+    if (ok) return true;
+    mesh = {};
+    error = ui::Tr("帯を作れません（パスが折り返しているか、形が壊れています）", "Could not build the band (the path folds back on itself, or its shape is broken)");
+    return false;
+}
+
 // 留め継ぎ / 丸めの帯で、角を、前後に余白を残して別のピースに切り分ける。
 // 切る位置は道のりで決める。角の頂点から、留め継ぎの斜めの断面が収まる長さ + 余白だけ離れた所で切る。
 // 隣の角との間が足りなければ、間の半分ずつ（開いたパスの端までなら、端まで）に縮める。
@@ -700,6 +715,10 @@ bool BuildSplitStroke(const Path& path, const StrokeOptions& options, StrokeBuil
         cumulative[i + 1] = cumulative[i] + Length(Sub(path.points[(i + 1) % count], path.points[i]));
     }
     const float total = cumulative.back();
+    if (!(total > 1.0e-5f) || !std::isfinite(total)) {
+        error = ui::Tr("パスの長さがありません", "The path has no length");
+        return false;
+    }
     const auto pointAt = [&](float s) {
         if (path.closed) {
             s = std::fmod(s, total);
@@ -718,9 +737,10 @@ bool BuildSplitStroke(const Path& path, const StrokeOptions& options, StrokeBuil
     constexpr float kJoin = 1.0e-5f;
     const auto appendRun = [&](float a, float b, std::vector<Point2>& out) {
         if (out.empty()) out.push_back(pointAt(a));
-        // 閉じたパスは、a が 0 より前や、b が一周の先になることがある。
-        const int firstLap = path.closed ? static_cast<int>(std::floor(a / total)) : 0;
-        const int lastLap = path.closed ? static_cast<int>(std::floor(b / total)) : 0;
+        // 閉じたパスは、a が 0 より前や、b が一周の先になることがある。まともな値なら、前後 1 周ぶんで足りる。
+        // **周回の数には歯止めを掛ける**（壊れた値が来たとき、何億周も回って固まらないように）。
+        const int firstLap = path.closed ? static_cast<int>(std::clamp(std::floor(a / total), -2.0f, 3.0f)) : 0;
+        const int lastLap = path.closed ? static_cast<int>(std::clamp(std::floor(b / total), -2.0f, 3.0f)) : 0;
         for (int lap = firstLap; lap <= lastLap; ++lap) {
             for (size_t i = 0; i < (path.closed ? count : count); ++i) {
                 const float s = cumulative[i] + static_cast<float>(lap) * total;
@@ -750,7 +770,10 @@ bool BuildSplitStroke(const Path& path, const StrokeOptions& options, StrokeBuil
         Corner corner;
         corner.s = cumulative[i];
         // 留め継ぎの斜めの断面が届く長さ。折り返しに近い角では遠くへ飛ぶので、帯の幅の 4 倍で止める。
-        corner.cut = std::min(reachOffset * std::tan(std::abs(turn) * 0.5f), options.width * 4.0f) + margin;
+        // **ちょうど折り返す角（180°）では、半分の角が 90° を僅かに超えて tan が負の大きな値になる。**
+        // そのままだと切る位置が何千万メートルも先になり、道のりを辿る計算が終わらなくなるので、角度を 90° の手前で止める。
+        const float halfTurn = std::min(std::abs(turn) * 0.5f, 1.45f);
+        corner.cut = std::clamp(reachOffset * std::tan(halfTurn), 0.0f, options.width * 4.0f) + margin;
         corner.left = turn > 0.0f;
         corners.push_back(corner);
     }
@@ -857,6 +880,12 @@ bool BuildSplitStroke(const Path& path, const StrokeOptions& options, StrokeBuil
 }  // namespace
 
 bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, std::string& error) {
+    for (const Point2& point : source.points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+            error = ui::Tr("パスの頂点に、数でない値があります", "The path has a point that is not a number");
+            return false;
+        }
+    }
     const Path path = Clean(source);
     const size_t count = path.points.size();
     if (count < (path.closed ? 3u : 2u)) {
@@ -902,7 +931,7 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
                 return false;
             }
             out = builder.Finish();
-            return true;
+            return CheckStrokeResult(out, error);
         }
     }
 
@@ -991,7 +1020,7 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
     }
 
     out = builder.Finish();
-    return true;
+    return CheckStrokeResult(out, error);
 }
 
 }  // namespace sg::mesh
