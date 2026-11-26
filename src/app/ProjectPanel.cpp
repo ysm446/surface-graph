@@ -2140,6 +2140,105 @@ void Application::DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin
     drawList->PopClipRect();
 }
 
+// --- 3D ビューの向きのギズモ ---------------------------------------------------------
+
+namespace {
+
+// ギズモの中心と半径（画面上）。3D ビューの右上の隅に置く。
+ImVec2 ViewGizmoCenter(const ImVec2& areaMin, const ImVec2& areaMax) {
+    const float radius = ui::Scaled(34.0f);
+    const float margin = ui::Scaled(12.0f);
+    return {areaMax.x - radius - margin, areaMin.y + radius + margin};
+}
+
+// 真上から見ているか（向きのギズモの「真上」の状態）。
+bool IsTopView(const engine::PreviewSettings& settings) { return settings.pitch > 1.45f && std::abs(settings.yaw) < 0.02f; }
+
+}  // namespace
+
+bool Application::ViewGizmoHot(const ImVec2& areaMin, const ImVec2& areaMax) const {
+    if (!ShowsAssetView()) return false;
+    const ImVec2 center = ViewGizmoCenter(areaMin, areaMax);
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const float radius = ui::Scaled(34.0f) + ui::Scaled(4.0f);
+    if (std::hypot(mouse.x - center.x, mouse.y - center.y) > radius) return false;
+    // ほかの操作（頂点のドラッグ、矩形の選択、視点のドラッグ）の途中で上を通っただけなら、受けない。
+    return ImGui::IsMouseClicked(ImGuiMouseButton_Left) || !ImGui::IsAnyMouseDown();
+}
+
+void Application::ToggleTopView() {
+    engine::PreviewSettings& settings = m_assetViewSettings;
+    if (IsTopView(settings)) {
+        // パースへ。真上にする前の向きへ戻す。
+        settings.yaw = m_perspectiveYaw;
+        settings.pitch = m_perspectivePitch;
+    } else {
+        m_perspectiveYaw = settings.yaw;
+        // 真上に近い向きから切り替えたときは、戻り先を既定の斜めにする（戻しても変わらない、を避ける）。
+        m_perspectivePitch = (settings.pitch > 1.35f) ? 0.95f : settings.pitch;
+        settings.yaw = 0.0f;
+        settings.pitch = 1.5f;
+    }
+}
+
+void Application::DrawViewGizmo(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax) {
+    if (!ShowsAssetView()) return;
+    const AssetCamera camera = MakeAssetCamera(m_assetViewSettings, areaMin, areaMax, m_assetFrameX, m_assetFrameZ, m_assetFrameHalf);
+    const ImVec2 center = ViewGizmoCenter(areaMin, areaMax);
+    const float radius = ui::Scaled(34.0f);
+    const float length = radius - ui::Scaled(10.0f);
+    const bool hot = ViewGizmoHot(areaMin, areaMax);
+    const bool top = IsTopView(m_assetViewSettings);
+
+    // 地の円。載せると少し明るくする（押せることが分かるように）。
+    drawList->AddCircleFilled(center, radius, ImGui::GetColorU32(ImGuiCol_PopupBg, hot ? 0.85f : 0.55f), 48);
+    if (hot) drawList->AddCircle(center, radius, ImGui::GetColorU32(ImGuiCol_HeaderHovered), 48, ui::Scaled(1.0f));
+
+    // 3 軸。画面の奥を向いているものから描く（手前の軸が上に重なる）。
+    struct Axis {
+        ImVec2 end;
+        float depth;  // 正なら奥
+        int id;
+    };
+    static const float kWorldAxes[3][3] = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+    Axis axes[3];
+    for (int i = 0; i < 3; ++i) {
+        const float* a = kWorldAxes[i];
+        const float x = a[0] * camera.right[0] + a[1] * camera.right[1] + a[2] * camera.right[2];
+        const float y = a[0] * camera.up[0] + a[1] * camera.up[1] + a[2] * camera.up[2];
+        axes[i].depth = a[0] * camera.forward[0] + a[1] * camera.forward[1] + a[2] * camera.forward[2];
+        axes[i].end = {x * length, -y * length};
+        axes[i].id = i;
+    }
+    std::sort(std::begin(axes), std::end(axes), [](const Axis& a, const Axis& b) { return a.depth > b.depth; });
+    static const char* kLabels[3] = {"X", "Y", "Z"};
+    const float dot = ui::Scaled(7.5f);
+    const float fontSize = ImGui::GetFontSize() * 0.75f;
+    for (const Axis& axis : axes) {
+        const ImU32 color = ui::TransformAxisColor(axis.id);
+        const ImVec2 positive = {center.x + axis.end.x, center.y + axis.end.y};
+        const ImVec2 negative = {center.x - axis.end.x, center.y - axis.end.y};
+        // 負の側は、小さく薄い丸だけ。
+        drawList->AddCircleFilled(negative, ui::Scaled(3.0f), (color & 0x00ffffffu) | 0x66000000u, 16);
+        drawList->AddLine(center, positive, color, ui::Scaled(2.0f));
+        drawList->AddCircleFilled(positive, dot, color, 24);
+        const ImVec2 textSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, kLabels[axis.id]);
+        drawList->AddText(ImGui::GetFont(), fontSize, {positive.x - textSize.x * 0.5f, positive.y - textSize.y * 0.5f},
+                          ImGui::GetColorU32(ImGuiCol_PopupBg), kLabels[axis.id]);
+    }
+
+    // いまの向きの名前を、ギズモの下に小さく出す。
+    const char* label = top ? ui::Tr("真上", "Top") : ui::Tr("パース", "Persp");
+    const ImVec2 labelSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label);
+    const ImVec2 labelPos = {center.x - labelSize.x * 0.5f, center.y + radius + ui::Scaled(3.0f)};
+    drawList->AddText(ImGui::GetFont(), fontSize, {labelPos.x + 1.0f, labelPos.y + 1.0f}, IM_COL32(0, 0, 0, 160), label);
+    drawList->AddText(ImGui::GetFont(), fontSize, labelPos, ImGui::GetColorU32(hot ? ImGuiCol_Text : ImGuiCol_TextDisabled), label);
+    if (hot) {
+        ImGui::SetTooltip("%s", top ? ui::Tr("クリックで、パース（斜めからの向き）へ戻す", "Click to return to the perspective view")
+                                    : ui::Tr("クリックで、真上から見る（X が右、Z が手前）", "Click to look straight down (X right, Z toward you)"));
+    }
+}
+
 // --- メッシュグラフで表示中の出力 ---------------------------------------------------
 
 // メッシュの階層で、表示中のノード（出力ピンのクリックで選ぶ）の結果を、3D ビューと UV の表示に出せる形にする。

@@ -888,19 +888,7 @@ void Application::DrawView3dPanel() {
         ImGui::SameLine();
     }
     if (ImGui::Button(ui::Tr("表示設定", "View Settings"))) ImGui::OpenPopup("##view3dSettings");
-    // アセットは、真上から見る向きへすぐ切り替えられるようにする（頂点を置くときに、寸法を揃えやすい）。
-    if (assetView) {
-        ImGui::SameLine();
-        if (ImGui::Button(ui::Tr("真上", "Top"))) {
-            settings.yaw = 0.0f;
-            settings.pitch = 1.5f;
-            settings.panX = 0.0f;
-            settings.panY = 0.0f;
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip("%s", ui::Tr("真上から見る（X が右、Z が手前）。F で元の向きに戻す", "Look straight down (X right, Z toward you). F restores the view"));
-        }
-    }
+    // 「真上」と「パース」の切り替えは、3D ビューの右上の向きのギズモで行う（DrawViewGizmo）。
     // 「視点を戻す」はボタンではなく F キー（3D ビューに載せて押す。terrain-graph のビューポートと同じキー）。
     if (!assetView && m_graph.FindMaterialNode() == nullptr) {
         ImGui::SameLine();
@@ -1000,7 +988,10 @@ void Application::DrawView3dPanel() {
         if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetKeyOwner(ImGuiMod_Alt, ImGui::GetItemID());
         // メッシュグラフでパスノードを選んでいれば、ここで頂点を編集できる。頂点を掴んでいる間と、
         // Ctrl を押している間（頂点を足す）は、視点を動かさない。
-        if (assetView) HandlePathEditIn3d(areaMin, areaMax);
+        // 右上の向きのギズモ。クリックで「真上」と「パース」を切り替える。ギズモの上では、パスの編集と視点の操作を受けない。
+        const bool gizmoHot = ViewGizmoHot(areaMin, areaMax) && ImGui::IsItemHovered();
+        if (gizmoHot && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.KeyAlt) ToggleTopView();
+        if (assetView && !gizmoHot) HandlePathEditIn3d(areaMin, areaMax);
         const bool editingPath = assetView && m_pathEditNode != 0 && (m_pathDragging || io.KeyCtrl);
         // 視点の操作は DCC ツール（Maya など）に合わせる（ユーザー指定 2026-11-25）:
         //   Alt + 左ドラッグ = 回す、Alt + 中ドラッグ（Alt なしでも）= パン、Alt + 右ドラッグ = 近づく・離れる。
@@ -1068,6 +1059,7 @@ void Application::DrawView3dPanel() {
         DrawAssetWireframe(drawList, areaMin, areaMax);
         DrawPreviewLightGizmo(areaMin, areaMax);
         if (assetView) DrawPathEditIn3d(drawList, areaMin, areaMax);
+        DrawViewGizmo(drawList, areaMin, areaMax);
     }
     ImGui::End();
 }

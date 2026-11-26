@@ -194,6 +194,11 @@ private:
     void DrawPathEditHints(ImDrawList* drawList, const graph::Node& node, const ImVec2& areaMin, const ImVec2& areaMax, bool in3d);
     // 3D ビューのワイヤーフレーム（メッシュの上に、黒い線で三角形の辺を重ねる）。
     void DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
+    // 3D ビューの右上の、向きのギズモ（3 軸）。クリックで「真上」と「パース」を切り替える。
+    // ViewGizmoHot は、カーソルがギズモの上にあって、クリックを受けられる状態か（ほかの操作のドラッグ中でない）。
+    bool ViewGizmoHot(const ImVec2& areaMin, const ImVec2& areaMax) const;
+    void ToggleTopView();
+    void DrawViewGizmo(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
     void HandlePathEditIn3d(const ImVec2& areaMin, const ImVec2& areaMax);
     void DrawPathEditIn3d(ImDrawList* drawList, const ImVec2& areaMin, const ImVec2& areaMax);
     // メッシュの階層で表示中の出力を、3D ビューと UV の表示に出せる形にする。
@@ -318,6 +323,9 @@ private:
     engine::PreviewSettings m_assetViewSettings;
     bool m_view3dAsset = true;  // マテリアルの階層で、アセットに貼った表示にする
     bool m_assetWireframe = false;  // アセットの表示に、三角形の辺を黒い線で重ねる
+    // 「真上」へ切り替える前の向き（「パース」へ戻すときに使う）。
+    float m_perspectiveYaw = 0.0f;
+    float m_perspectivePitch = 0.95f;
     bool m_assetShowGround = true;  // アセットの表示で、地面を描く（切ると、背景の上に貼り物だけ）
     bool m_assetShowGrid = true;    // アセットの表示で、1 m の格子を描く（地面を切っていても、線だけ出る）
     // メッシュの階層の 3D ビューに、アセット全体をマテリアル付きで出すか。既定は偽で、このメッシュグラフの結果だけを
