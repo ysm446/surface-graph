@@ -20,7 +20,16 @@ struct NodeResult {
     uint64_t hash = 0;
     std::shared_ptr<const Path> path;
     std::shared_ptr<const Mesh> mesh;
+    // 出力ピンが複数あるノード（mesh.split）だけが持つ、ピンごとのメッシュ。該当するものが無いピンは null。
+    // このとき mesh には、分ける前の全体が入る（サムネイルと、数の表示に使う）。
+    std::vector<std::shared_ptr<const Mesh>> outputs;
     std::string error;
+
+    // 出力ピンのメッシュ。出力が 1 つのノードは、どのピンでも mesh を返す。
+    std::shared_ptr<const Mesh> Output(int pin) const {
+        if (outputs.empty()) return mesh;
+        return (pin >= 0 && pin < static_cast<int>(outputs.size())) ? outputs[static_cast<size_t>(pin)] : nullptr;
+    }
 };
 
 // メッシュ出力ノード 1 つぶん。プロジェクトのグラフで、メッシュノードの出力ピンになる。

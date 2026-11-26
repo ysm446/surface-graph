@@ -14,7 +14,16 @@ namespace {
 // パラメータの番号。src/graph/NodeDefinitions.cpp の並びと揃えること。
 enum PathPointsParam { kPointsPoints, kPointsClosed, kPointsCurve, kPointsRounding, kPointsClothoidRatio, kPointsSegments };
 enum PathRectParam { kRectWidth, kRectHeight };
-enum StrokeParam { kStrokeWidth, kStrokeAlign, kStrokeCorner, kStrokeSegments, kStrokeCaps, kStrokeOverlap };
+enum StrokeParam {
+    kStrokeWidth,
+    kStrokeAlign,
+    kStrokeCorner,
+    kStrokeSegments,
+    kStrokeCaps,
+    kStrokeOverlap,
+    kStrokeSplitCorners,
+    kStrokeCornerMargin
+};
 enum OutputParam { kOutputName };
 enum UvPlanarParam { kPlanarScale, kPlanarOffset, kPlanarRotation };
 
@@ -57,7 +66,9 @@ void HashParam(Hasher& hasher, const graph::ParamDef& def, const graph::ParamVal
 }
 
 // ノードを 1 つ計算する。inputs は入力ピンの順で、繋がっていなければ null。
-void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inputs, NodeResult& result) {
+// meshes は、入力ピンに繋がった出力ピンのメッシュ（上流がパスのとき、繋がっていないとき、そのピンに何も無いときは null）。
+void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inputs,
+             const std::vector<std::shared_ptr<const Mesh>>& meshes, NodeResult& result) {
     const std::string_view type = node.def->type;
     // 入力が要るノードは、繋がっていて、上流が成功していること。マージだけは、繋いでいない入力を飛ばす。
     const bool optionalInputs = (type == "mesh.merge");
@@ -71,6 +82,14 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
             result.error = ui::Tr("入力のノードがエラーです", "An upstream node has an error");
             return;
         }
+    }
+    // メッシュの入力に、メッシュが来ていること（分離のノードの、該当するピースの無いピンに繋ぐと、何も来ない）。
+    for (size_t i = 0; i < inputs.size() && i < node.def->inputs.size(); ++i) {
+        if (node.def->inputs[i].type != graph::PinType::Mesh || inputs[i] == nullptr || meshes[i] != nullptr) continue;
+        if (optionalInputs) continue;
+        result.error = ui::Tr("入力にメッシュがありません（繋いだピンに、該当するピースがありません）",
+                              "The input has no mesh (the connected pin has no matching pieces)");
+        return;
     }
 
     const std::vector<graph::ParamValue>& params = node.params;
@@ -98,27 +117,38 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
         options.roundSegments = params[kStrokeSegments].i;
         options.caps = (params[kStrokeCaps].i != 0);
         options.overlap = params[kStrokeOverlap].f[0];
+        options.splitCorners = (params[kStrokeSplitCorners].i != 0);
+        options.cornerMargin = params[kStrokeCornerMargin].f[0];
         Mesh mesh;
         if (BuildStroke(*inputs[0]->path, options, mesh, result.error)) result.mesh = std::make_shared<const Mesh>(std::move(mesh));
     } else if (type == "mesh.merge") {
         // 入力ピンの順に重ねる（A が一番下）。1 つも繋がっていなければエラー。
-        std::vector<const Mesh*> meshes;
-        for (const NodeResult* input : inputs) {
-            if (input != nullptr && input->mesh != nullptr) meshes.push_back(input->mesh.get());
+        std::vector<const Mesh*> parts;
+        for (const std::shared_ptr<const Mesh>& mesh : meshes) {
+            if (mesh != nullptr) parts.push_back(mesh.get());
         }
-        if (meshes.empty()) {
+        if (parts.empty()) {
             result.error = ui::Tr("入力が繋がっていません", "An input is not connected");
         } else {
-            result.mesh = std::make_shared<const Mesh>(MergeMeshes(meshes));
+            result.mesh = std::make_shared<const Mesh>(MergeMeshes(parts));
+        }
+    } else if (type == "mesh.split") {
+        // 出力ピンの並びは、ノードの定義（辺、外角、内角、始端、終端、塗り）と揃えること。
+        static constexpr PieceKind kKinds[] = {PieceKind::Edge,     PieceKind::OuterCorner, PieceKind::InnerCorner,
+                                               PieceKind::StartCap, PieceKind::EndCap,      PieceKind::Fill};
+        result.mesh = meshes[0];
+        for (const PieceKind kind : kKinds) {
+            Mesh part = ExtractPieces(*meshes[0], kind);
+            result.outputs.push_back(part.pieces.empty() ? nullptr : std::make_shared<const Mesh>(std::move(part)));
         }
     } else if (type == "mesh.uv_regions") {
-        result.mesh = std::make_shared<const Mesh>(ApplyUvRegions(*inputs[0]->mesh));
+        result.mesh = std::make_shared<const Mesh>(ApplyUvRegions(*meshes[0]));
     } else if (type == "mesh.uv_planar") {
-        result.mesh = std::make_shared<const Mesh>(ApplyUvPlanar(*inputs[0]->mesh, params[kPlanarScale].f[0],
+        result.mesh = std::make_shared<const Mesh>(ApplyUvPlanar(*meshes[0], params[kPlanarScale].f[0],
                                                                  Point2{params[kPlanarOffset].f[0], params[kPlanarOffset].f[1]},
                                                                  params[kPlanarRotation].f[0]));
     } else if (type == "mesh.output") {
-        result.mesh = inputs[0]->mesh;
+        result.mesh = meshes[0];
     } else {
         result.error = ui::Tr("メッシュグラフのノードではありません", "Not a mesh graph node");
     }
@@ -139,10 +169,14 @@ void MeshEvaluator::Evaluate(const graph::Graph& graph) {
             HashParam(hasher, node.def->params[i], node.params[i]);
         }
         std::vector<const NodeResult*> inputs(node.def->inputs.size(), nullptr);
+        std::vector<std::shared_ptr<const Mesh>> meshes(node.def->inputs.size());
         for (size_t i = 0; i < inputs.size(); ++i) {
             const graph::Link* link = graph.InputLink(id, static_cast<int>(i));
             const auto upstream = (link != nullptr) ? m_results.find(link->fromNode) : m_results.end();
-            if (upstream != m_results.end()) inputs[i] = &upstream->second;
+            if (upstream != m_results.end()) {
+                inputs[i] = &upstream->second;
+                meshes[i] = upstream->second.Output(link->fromPin);
+            }
             hasher.Int(inputs[i] != nullptr ? static_cast<int64_t>(inputs[i]->hash) : 0);
             hasher.Int(link != nullptr ? link->fromPin : -1);
         }
@@ -152,7 +186,7 @@ void MeshEvaluator::Evaluate(const graph::Graph& graph) {
 
         NodeResult result;
         result.hash = hasher.value;
-        Compute(node, inputs, result);
+        Compute(node, inputs, meshes, result);
         // unordered_map は要素を足してもほかの要素の場所が変わらないので、inputs のポインタは有効なまま。
         m_results[id] = std::move(result);
         ++m_computedCount;

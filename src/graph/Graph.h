@@ -107,7 +107,8 @@ struct NodeDef {
 const std::vector<NodeDef>& AllNodeDefs();
 const NodeDef* FindNodeDef(std::string_view type);
 
-// ノードの入出力の上限（ルート定数の枠）。
+// ノードの入出力の上限（ルート定数の枠）。GPU で評価するマテリアルグラフのノードの話で、
+// CPU で評価するメッシュグラフのノード（mesh.split は出力が 6 本）には、出力の上限は掛からない。
 inline constexpr uint32_t kMaxNodeInputs = 8;
 // File のパラメータの画像は、この番号の入力として渡す（Image ノードは入力ピンを持たない）。
 inline constexpr uint32_t kImageInputSlot = kMaxNodeInputs - 1;

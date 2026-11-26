@@ -49,7 +49,8 @@ struct Piece {
     PieceKind kind = PieceKind::Fill;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
-    // Edge だけ。帯の幅を 1 とした長さ（u の終わりの値）。
+    // 帯の幅を 1 とした長さ（u の終わりの値）。Edge と、帯の形をした角のピース（帯のノードの「角を切り分ける」で
+    // できる、角の前後に余白を残した区間。u は Edge と同じく長さ方向）が持つ。正方形の角と端のピースは 0。
     float length = 0.0f;
     UvMapping mapping = UvMapping::Default;
 

@@ -2015,9 +2015,12 @@ void Application::UpdateMeshPreview() {
     const graph::Node* viewed = m_graph.FindNode(m_viewNode);
     if (viewed == nullptr) viewed = m_graph.FindNode(m_selectedNode);
     const mesh::NodeResult* result = (viewed != nullptr) ? m_meshEvaluator.Find(viewed->id) : nullptr;
+    // 表示中の出力ピンのメッシュ（分離のノードは、ピンごとに違う）。
+    const int viewedPin = (viewed != nullptr && viewed->id == m_viewNode) ? m_viewOutput : 0;
+    const std::shared_ptr<const mesh::Mesh> viewedMesh = (result != nullptr) ? result->Output(viewedPin) : nullptr;
     // マテリアルなしの表示で、表示中のノードがメッシュを持たない（パスを見ている、何も選んでいない）ときは、
     // このグラフのメッシュ出力を全部出す（パスを動かした結果が見えるように）。
-    if (!m_meshShowMaterial && (result == nullptr || result->mesh == nullptr)) {
+    if (!m_meshShowMaterial && viewedMesh == nullptr) {
         for (const mesh::MeshOutput& output : m_meshEvaluator.Outputs(m_graph)) {
             if (output.mesh == nullptr) continue;
             mesh::MaterialInfo info;
@@ -2034,14 +2037,17 @@ void Application::UpdateMeshPreview() {
     m_meshPreview.node = viewed->id;
     m_meshPreview.path = result->path;
     m_meshPreview.error = result->error;
-    if (result->mesh == nullptr) return;
+    if (viewedMesh == nullptr) return;
 
     // このノードの結果を受けるメッシュ出力（自分がメッシュ出力なら自分）。
     std::vector<uint64_t> outputs;
     if (std::string_view(viewed->def->type) == "mesh.output") outputs.push_back(viewed->id);
     for (const graph::Link& link : m_graph.links) {
         const graph::Node* target = m_graph.FindNode(link.toNode);
-        if (link.fromNode == viewed->id && target != nullptr && std::string_view(target->def->type) == "mesh.output") outputs.push_back(target->id);
+        if (link.fromNode == viewed->id && link.fromPin == viewedPin && target != nullptr &&
+            std::string_view(target->def->type) == "mesh.output") {
+            outputs.push_back(target->id);
+        }
     }
     // マテリアルなしの表示では、アセットのレイヤーを探さない（いつも確認用のメッシュを作る）。
     for (size_t i = 0; m_meshShowMaterial && i < m_asset.layers.size(); ++i) {
@@ -2055,11 +2061,11 @@ void Application::UpdateMeshPreview() {
         mesh::MaterialInfo info;
         // 区画の確認用の絵は、UV 区画のノードを通したメッシュにだけ出す。ほか（塗り、既定の UV の帯）は、
         // タイル（区画なし）で割り付けて、UV チェッカーを貼る。
-        const bool hasBandPieces = mesh::UsesUvRegions(*result->mesh);
+        const bool hasBandPieces = mesh::UsesUvRegions(*viewedMesh);
         info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
         std::string error;
         m_meshPreview.layout = info.layout;
-        m_meshPreview.hasMesh = mesh::AssignUvs(*result->mesh, info, m_meshPreview.layer, error);
+        m_meshPreview.hasMesh = mesh::AssignUvs(*viewedMesh, info, m_meshPreview.layer, error);
     }
 }
 
@@ -2391,7 +2397,9 @@ void Application::DrawTopDownView(const ImVec2& areaMin, const ImVec2& areaMax) 
         const graph::Node* node = m_graph.FindNode(m_viewNode);
         if (node == nullptr) node = m_graph.FindNode(m_selectedNode);
         if (const mesh::NodeResult* result = (node != nullptr) ? m_meshEvaluator.Find(node->id) : nullptr) {
-            if (result->mesh != nullptr) meshes.push_back(result->mesh.get());
+            // 表示中の出力ピンのメッシュ（分離のノードは、ピンごとに違う）。result が持っているので、ポインタは有効なまま。
+            const mesh::Mesh* shown = result->Output((node->id == m_viewNode) ? m_viewOutput : 0).get();
+            if (shown != nullptr) meshes.push_back(shown);
             path = result->path.get();
             error = result->error;
             caption = std::string(node->def->label.Get()) + "  #" + std::to_string(node->id);

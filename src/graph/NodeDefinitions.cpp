@@ -950,6 +950,16 @@ std::vector<NodeDef> BuildDefs() {
             Float("overlap", {"重なりの長さ", "Overlap"}, 0.25f, 0.0f, 1.0f,
                   {"角と端のピースを、辺の上へ延ばして重ねる長さ（帯の幅に対する比）。延ばした先で透明になる。",
                    "How far corner and end pieces extend over the edges, as a ratio of the band width. They fade out at the far end."}),
+            Bool("splitCorners", {"角を切り分ける", "Split Corners"}, false,
+                 {"留め継ぎ / 丸めの角を、前後に余白を残して別のピース（外角 / 内角）に切り分ける。分離のノードで、角と辺を別々に取り出せる。"
+                  "約 15° より緩い折れ（曲線）は角とみなさない。角ピースのときは使わない。",
+                  "Cuts each mitered or rounded corner out as its own piece (outer / inner corner), keeping a margin before and after it. "
+                  "A Split node can then output corners and edges separately. Bends gentler than about 15 degrees (curves) are not corners. "
+                  "Not used with Corner Pieces."}),
+            Float("cornerMargin", {"角の余白", "Corner Margin"}, 0.5f, 0.0f, 8.0f,
+                  {"切り分ける角の前後に残す、真っ直ぐな部分の長さ（帯の幅に対する比）。隣の角や端に届くときは、そこまでに縮める。",
+                   "Length of the straight part kept before and after a split corner, as a ratio of the band width. "
+                   "It shrinks when it would reach the next corner or the end."}),
         };
         def.tooltip = {"パスに沿った帯。u は帯の長さ方向（幅を 1 とする）、v は外側が 0、内側が 1。"
                        "UV は既定のままで、テクスチャの全体を使う（辺は長さ方向にタイルする）。マテリアルの区画"
@@ -957,6 +967,25 @@ std::vector<NodeDef> BuildDefs() {
                        "A band along a path. U runs along the band (in band widths); V is 0 on the outside and 1 on the inside. "
                        "The UVs stay at their defaults and use the whole texture (edges tile along the band). "
                        "Pass it through a UV Regions node to map it to the regions of a material (edge, corners, ends)."};
+        defs.push_back(def);
+    }
+    {
+        // 出力ピンの並びは保存形式の一部で、評価（MeshEvaluator.cpp の mesh.split）とも揃えること。
+        NodeDef def;
+        def.type = "mesh.split";
+        def.label = {"分離", "Split"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {{"Mesh", {"メッシュ", "Mesh"}, PinType::Mesh}};
+        def.outputs = {{"Edge", {"辺", "Edge"}, PinType::Mesh},         {"OuterCorner", {"外角", "Outer Corner"}, PinType::Mesh},
+                       {"InnerCorner", {"内角", "Inner Corner"}, PinType::Mesh}, {"StartCap", {"始端", "Start Cap"}, PinType::Mesh},
+                       {"EndCap", {"終端", "End Cap"}, PinType::Mesh},   {"Fill", {"塗り", "Fill"}, PinType::Mesh}};
+        def.tooltip = {"メッシュを、ピースの種類ごとに分ける（辺、外角、内角、始端、終端、塗り）。どこで切るかは、帯のノードの"
+                       "「角の処理」と「端のピース」が決める。分けたものは、別々の UV のノードやメッシュ出力へ繋げる。"
+                       "該当するピースの無いピンからは、何も出ない（繋いだ先はエラーになる。マージは飛ばす）。",
+                       "Splits a mesh by the kind of its pieces (edge, outer corner, inner corner, start cap, end cap, fill). "
+                       "Where the band is cut is decided by Corners and End Pieces of the Band node. Connect the parts to separate UV nodes "
+                       "or mesh outputs. A pin with no matching pieces outputs nothing (nodes connected to it report an error; Merge skips it)."};
         defs.push_back(def);
     }
     {

@@ -11,6 +11,8 @@ namespace sg::mesh {
 namespace {
 
 constexpr float kEpsilon = 1.0e-6f;
+// これより緩い折れ（約 15°。曲線をなぞった細かい折れ線）は、角として扱わない。
+constexpr float kCornerTurn = 0.26f;
 
 Point2 Add(Point2 a, Point2 b) { return {a.x + b.x, a.y + b.y}; }
 Point2 Sub(Point2 a, Point2 b) { return {a.x - b.x, a.y - b.y}; }
@@ -139,8 +141,12 @@ struct StrokeBuilder {
 
     // 辺のピース。points を順に辿る帯で、始まりは最初の辺に沿って startTrim だけ進んだ所、
     // 終わりは最後の辺に沿って endTrim（0 以下）だけ戻った所。途中の頂点は留め継ぎか丸めにする。
+    // kind が Edge でなければ、帯の形をした角のピースとして、角と端の側（上に描く側）へ足す。そのときは、
+    // 始まりの fadeStart と終わりの fadeEnd（メートル）が辺の上へ重なる部分で、端へ向けて alpha を 0 にし、
+    // u はその内側を 0 〜 length とする。
     bool AddEdge(const std::vector<Point2>& points, float startTrim, float endTrim, bool round, int roundSegments,
-                 std::string& error) {
+                 std::string& error, PieceKind kind = PieceKind::Edge, float fadeStart = 0.0f, float fadeEnd = 0.0f) {
+        Mesh& target = (kind == PieceKind::Edge) ? edges : pieces;
         const size_t segmentCount = points.size() - 1;
         std::vector<Point2> directions(segmentCount);
         std::vector<float> lengths(segmentCount);
@@ -158,15 +164,15 @@ struct StrokeBuilder {
         }
 
         Piece piece;
-        piece.kind = PieceKind::Edge;
-        piece.firstIndex = static_cast<uint32_t>(edges.indices.size());
-        const uint32_t firstVertex = static_cast<uint32_t>(edges.vertices.size());
+        piece.kind = kind;
+        piece.firstIndex = static_cast<uint32_t>(target.indices.size());
+        const uint32_t firstVertex = static_cast<uint32_t>(target.vertices.size());
         uint32_t sectionCount = 0;
         // 帯を横切る断面を 1 つ足す（外側、内側の順）。
         const auto section = [&](Point2 outer, Point2 inner, float distance) {
             const float u = distance / width;
-            AddVertex(edges, outer, {u, 0.0f}, 1.0f);
-            AddVertex(edges, inner, {u, 1.0f}, 1.0f);
+            AddVertex(target, outer, {u, 0.0f}, 1.0f);
+            AddVertex(target, inner, {u, 1.0f}, 1.0f);
             ++sectionCount;
         };
 
@@ -199,8 +205,7 @@ struct StrokeBuilder {
             const float reach = std::min({std::max(std::abs(offsetOuter), std::abs(offsetInner)) * std::abs(Cross(d1, d2)) / denominator,
                                           before * 0.5f, after * 0.5f});
             // 緩い折れ（曲線をなぞった細かい折れ線）では断面がほとんど傾かないので、足さない（頂点が 3 倍に増えるだけになる）。
-            constexpr float kStraightenTurn = 0.26f;  // 約 15°
-            const bool straighten = reach > 1.0e-5f && std::abs(turn) > kStraightenTurn;
+            const bool straighten = reach > 1.0e-5f && std::abs(turn) > kCornerTurn;
             if (straighten) {
                 const Point2 base = Sub(points[i], Mul(d1, reach));
                 section(Add(base, Mul(n1, offsetOuter)), Add(base, Mul(n1, offsetInner)), distance - reach);
@@ -236,11 +241,24 @@ struct StrokeBuilder {
 
         for (uint32_t s = 0; s + 1 < sectionCount; ++s) {
             const uint32_t base = firstVertex + s * 2;
-            edges.indices.insert(edges.indices.end(), {base, base + 2, base + 3, base, base + 3, base + 1});
+            target.indices.insert(target.indices.end(), {base, base + 2, base + 3, base, base + 3, base + 1});
         }
-        piece.indexCount = static_cast<uint32_t>(edges.indices.size()) - piece.firstIndex;
+        piece.indexCount = static_cast<uint32_t>(target.indices.size()) - piece.firstIndex;
         piece.length = distance / width;
-        edges.pieces.push_back(piece);
+        if (kind != PieceKind::Edge) {
+            // 重なりの部分を除いた長さを u の範囲にして、重なりの先へ向けて透明にする。
+            for (size_t v = firstVertex; v < target.vertices.size(); ++v) {
+                MeshVertex& vertex = target.vertices[v];
+                const float along = vertex.uv.x * width;
+                float alpha = 1.0f;
+                if (fadeStart > kEpsilon) alpha = std::min(alpha, std::clamp(along / fadeStart, 0.0f, 1.0f));
+                if (fadeEnd > kEpsilon) alpha = std::min(alpha, std::clamp((distance - along) / fadeEnd, 0.0f, 1.0f));
+                vertex.alpha = alpha;
+                vertex.uv.x = (along - fadeStart) / width;
+            }
+            piece.length = std::max((distance - fadeStart - fadeEnd) / width, 1.0e-4f);
+        }
+        target.pieces.push_back(piece);
         return true;
     }
 
@@ -296,6 +314,28 @@ Mesh MergeMeshes(const std::vector<const Mesh*>& meshes) {
             piece.firstIndex += indexOffset;
             result.pieces.push_back(piece);
         }
+    }
+    return result;
+}
+
+Mesh ExtractPieces(const Mesh& mesh, PieceKind kind) {
+    Mesh result;
+    constexpr uint32_t kUnmapped = 0xffffffffu;
+    std::vector<uint32_t> remap(mesh.vertices.size(), kUnmapped);
+    for (const Piece& piece : mesh.pieces) {
+        if (piece.kind != kind) continue;
+        Piece copy = piece;
+        copy.firstIndex = static_cast<uint32_t>(result.indices.size());
+        for (uint32_t i = piece.firstIndex; i < piece.firstIndex + piece.indexCount && i < mesh.indices.size(); ++i) {
+            const uint32_t source = mesh.indices[i];
+            if (remap[source] == kUnmapped) {
+                remap[source] = static_cast<uint32_t>(result.vertices.size());
+                result.vertices.push_back(mesh.vertices[source]);
+            }
+            result.indices.push_back(remap[source]);
+        }
+        copy.indexCount = static_cast<uint32_t>(result.indices.size()) - copy.firstIndex;
+        result.pieces.push_back(copy);
     }
     return result;
 }
@@ -420,6 +460,177 @@ bool BuildFill(const Path& source, Mesh& out, std::string& error) {
     return true;
 }
 
+namespace {
+
+// 留め継ぎ / 丸めの帯で、角を、前後に余白を残して別のピースに切り分ける。
+// 切る位置は道のりで決める。角の頂点から、留め継ぎの斜めの断面が収まる長さ + 余白だけ離れた所で切る。
+// 隣の角との間が足りなければ、間の半分ずつ（開いたパスの端までなら、端まで）に縮める。
+bool BuildSplitStroke(const Path& path, const StrokeOptions& options, StrokeBuilder& builder, bool round, int roundSegments,
+                      std::string& error) {
+    const size_t count = path.points.size();
+    const size_t segmentCount = path.closed ? count : count - 1;
+    // 頂点 i の道のり。
+    std::vector<float> cumulative(segmentCount + 1, 0.0f);
+    for (size_t i = 0; i < segmentCount; ++i) {
+        cumulative[i + 1] = cumulative[i] + Length(Sub(path.points[(i + 1) % count], path.points[i]));
+    }
+    const float total = cumulative.back();
+    const auto pointAt = [&](float s) {
+        if (path.closed) {
+            s = std::fmod(s, total);
+            if (s < 0.0f) s += total;
+        }
+        s = std::clamp(s, 0.0f, total);
+        size_t segment = 0;
+        while (segment + 1 < segmentCount && cumulative[segment + 1] < s) ++segment;
+        const float length = cumulative[segment + 1] - cumulative[segment];
+        const float ratio = (length > kEpsilon) ? (s - cumulative[segment]) / length : 0.0f;
+        const Point2 a = path.points[segment];
+        const Point2 b = path.points[(segment + 1) % count];
+        return Add(a, Mul(Sub(b, a), ratio));
+    };
+    // 道のり a から b まで（a < b）の折れ線を out の後ろへ足す。途中の頂点も含む。out の最後の点と同じ始点は足さない。
+    constexpr float kJoin = 1.0e-5f;
+    const auto appendRun = [&](float a, float b, std::vector<Point2>& out) {
+        if (out.empty()) out.push_back(pointAt(a));
+        // 閉じたパスは、a が 0 より前や、b が一周の先になることがある。
+        const int firstLap = path.closed ? static_cast<int>(std::floor(a / total)) : 0;
+        const int lastLap = path.closed ? static_cast<int>(std::floor(b / total)) : 0;
+        for (int lap = firstLap; lap <= lastLap; ++lap) {
+            for (size_t i = 0; i < (path.closed ? count : count); ++i) {
+                const float s = cumulative[i] + static_cast<float>(lap) * total;
+                if (s > a + kJoin && s < b - kJoin) out.push_back(path.points[i]);
+            }
+        }
+        out.push_back(pointAt(b));
+    };
+
+    struct Corner {
+        float s = 0.0f;       // 角の頂点の道のり
+        float cut = 0.0f;     // 切る位置までの長さ（縮める前）
+        float before = 0.0f;  // 手前で切る位置までの長さ
+        float after = 0.0f;   // 先で切る位置までの長さ
+        bool left = false;
+    };
+    std::vector<Corner> corners;
+    const float reachOffset = std::max(std::abs(builder.offsetOuter), std::abs(builder.offsetInner));
+    const float margin = std::max(options.cornerMargin, 0.0f) * options.width;
+    for (size_t i = path.closed ? 0 : 1; i < (path.closed ? count : count - 1); ++i) {
+        const Point2 before = Sub(path.points[i], path.points[(i + count - 1) % count]);
+        const Point2 after = Sub(path.points[(i + 1) % count], path.points[i]);
+        const Point2 d1 = Mul(before, 1.0f / Length(before));
+        const Point2 d2 = Mul(after, 1.0f / Length(after));
+        const float turn = std::atan2(Cross(d1, d2), Dot(d1, d2));
+        if (std::abs(turn) <= kCornerTurn) continue;
+        Corner corner;
+        corner.s = cumulative[i];
+        // 留め継ぎの斜めの断面が届く長さ。折り返しに近い角では遠くへ飛ぶので、帯の幅の 4 倍で止める。
+        corner.cut = std::min(reachOffset * std::tan(std::abs(turn) * 0.5f), options.width * 4.0f) + margin;
+        corner.left = turn > 0.0f;
+        corners.push_back(corner);
+    }
+
+    const bool caps = options.caps && !path.closed;
+    const float capLength = caps ? options.width : 0.0f;
+    if (!path.closed && total <= capLength * 2.0f + kJoin) {
+        error = ui::Tr("辺が帯の幅に対して短すぎます（角や端のピースが収まりません）",
+                       "An edge is too short for the band width (corner or end pieces do not fit)");
+        return false;
+    }
+    // 切る位置を、隣の角や端までの間に収める。
+    for (size_t c = 0; c < corners.size(); ++c) {
+        Corner& corner = corners[c];
+        const bool first = (c == 0), last = (c + 1 == corners.size());
+        float gapBefore, gapAfter;
+        if (path.closed) {
+            const Corner& previous = corners[(c + corners.size() - 1) % corners.size()];
+            const Corner& next = corners[(c + 1) % corners.size()];
+            gapBefore = (corners.size() == 1) ? total : corner.s - previous.s + (first ? total : 0.0f);
+            gapAfter = (corners.size() == 1) ? total : next.s - corner.s + (last ? total : 0.0f);
+            corner.before = std::min(corner.cut, gapBefore * 0.5f);
+            corner.after = std::min(corner.cut, gapAfter * 0.5f);
+        } else {
+            gapBefore = first ? corner.s - capLength : (corner.s - corners[c - 1].s) * 0.5f;
+            gapAfter = last ? total - capLength - corner.s : (corners[c + 1].s - corner.s) * 0.5f;
+            corner.before = std::clamp(corner.cut, 0.0f, std::max(gapBefore, 0.0f));
+            corner.after = std::clamp(corner.cut, 0.0f, std::max(gapAfter, 0.0f));
+        }
+    }
+
+    std::vector<Point2> run;
+    // 辺。道のり a から b まで。長さが無ければ足さない（角の区間どうしが接している）。
+    std::vector<float> edgeLengths;  // 角 c の先にある辺の長さ（重なりの長さを決めるのに使う）
+    const auto addEdge = [&](float a, float b) {
+        if (b - a <= 1.0e-4f) return true;
+        run.clear();
+        appendRun(a, b, run);
+        return run.size() >= 2 && builder.AddEdge(run, 0.0f, 0.0f, round, roundSegments, error);
+    };
+    float leadingEdge = 0.0f;  // 開いたパスの、最初の角より手前の辺の長さ
+    if (corners.empty()) return false;  // 呼ぶ側が、角のあるときだけ呼ぶ
+    if (path.closed) {
+        for (size_t c = 0; c < corners.size(); ++c) {
+            const Corner& corner = corners[c];
+            const Corner& next = corners[(c + 1) % corners.size()];
+            const float a = corner.s + corner.after;
+            float b = next.s - next.before;
+            if (c + 1 == corners.size()) b += total;
+            edgeLengths.push_back(std::max(b - a, 0.0f));
+            if (!addEdge(a, b)) return false;
+        }
+    } else {
+        leadingEdge = std::max(corners.front().s - corners.front().before - capLength, 0.0f);
+        if (!addEdge(capLength, corners.front().s - corners.front().before)) return false;
+        for (size_t c = 0; c < corners.size(); ++c) {
+            const Corner& corner = corners[c];
+            const float a = corner.s + corner.after;
+            const float b = (c + 1 < corners.size()) ? corners[c + 1].s - corners[c + 1].before : total - capLength;
+            edgeLengths.push_back(std::max(b - a, 0.0f));
+            if (!addEdge(a, b)) return false;
+        }
+    }
+
+    // 角の区間。辺の上へ、重なりの長さだけ延ばす（辺の長さまで）。
+    for (size_t c = 0; c < corners.size(); ++c) {
+        const Corner& corner = corners[c];
+        const float edgeBefore = path.closed ? edgeLengths[(c + corners.size() - 1) % corners.size()] : (c == 0 ? leadingEdge : edgeLengths[c - 1]);
+        const float fadeStart = std::min(builder.overlap, edgeBefore);
+        const float fadeEnd = std::min(builder.overlap, edgeLengths[c]);
+        const float a = corner.s - corner.before;
+        const float b = corner.s + corner.after;
+        if (b - a <= 1.0e-4f) continue;
+        run.clear();
+        if (fadeStart > 1.0e-4f) appendRun(a - fadeStart, a, run);
+        appendRun(a, corner.s, run);
+        appendRun(corner.s, b, run);
+        if (fadeEnd > 1.0e-4f) appendRun(b, b + fadeEnd, run);
+        // 繋ぎ目で同じ点が続いたら除く。
+        std::vector<Point2> cleaned;
+        for (const Point2& point : run) {
+            if (cleaned.empty() || Length(Sub(point, cleaned.back())) > kJoin) cleaned.push_back(point);
+        }
+        if (cleaned.size() < 2) continue;
+        if (!builder.AddEdge(cleaned, 0.0f, 0.0f, round, roundSegments, error, corner.left ? PieceKind::OuterCorner : PieceKind::InnerCorner,
+                             (fadeStart > 1.0e-4f) ? fadeStart : 0.0f, (fadeEnd > 1.0e-4f) ? fadeEnd : 0.0f)) {
+            return false;
+        }
+    }
+
+    if (caps) {
+        const auto towards = [](Point2 from, Point2 to, Point2 fallback) {
+            const Point2 delta = Sub(to, from);
+            return (Length(delta) > kEpsilon) ? Mul(delta, 1.0f / Length(delta)) : fallback;
+        };
+        const Point2 startFallback = towards(path.points[0], path.points[1], Point2{1.0f, 0.0f});
+        const Point2 endFallback = towards(path.points[count - 2], path.points[count - 1], Point2{1.0f, 0.0f});
+        builder.AddCap(path.points.front(), towards(path.points.front(), pointAt(capLength), startFallback), true);
+        builder.AddCap(path.points.back(), towards(pointAt(total - capLength), path.points.back(), endFallback), false);
+    }
+    return true;
+}
+
+}  // namespace
+
 bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, std::string& error) {
     const Path path = Clean(source);
     const size_t count = path.points.size();
@@ -451,6 +662,24 @@ bool BuildStroke(const Path& source, const StrokeOptions& options, Mesh& out, st
     }
     const bool round = (options.corner == StrokeCorner::Round);
     const int roundSegments = std::clamp(options.roundSegments, 1, 64);
+
+    // 留め継ぎ / 丸めの角を切り分ける。角（約 15° より鋭い折れ）が 1 つも無ければ、下のふつうの作り方へ進む。
+    if (options.splitCorners && options.corner != StrokeCorner::Pieces) {
+        bool hasCorner = false;
+        for (size_t i = path.closed ? 0 : 1; i < (path.closed ? count : count - 1) && !hasCorner; ++i) {
+            const Point2 a = Sub(path.points[i], path.points[(i + count - 1) % count]);
+            const Point2 b = Sub(path.points[(i + 1) % count], path.points[i]);
+            hasCorner = std::abs(std::atan2(Cross(a, b), Dot(a, b))) > kCornerTurn;
+        }
+        if (hasCorner) {
+            if (!BuildSplitStroke(path, options, builder, round, roundSegments, error)) {
+                if (error.empty()) error = ui::Tr("帯を作れません", "Could not build the band");
+                return false;
+            }
+            out = builder.Finish();
+            return true;
+        }
+    }
 
     const auto direction = [&](size_t from, size_t to) {
         const Point2 delta = Sub(path.points[to], path.points[from]);

@@ -74,12 +74,15 @@ bool AssignUvs(const Mesh& mesh, const MaterialInfo& material, AssetLayer& out, 
         const graph::UvRect whole = {0.0f, 0.0f, 1.0f, 1.0f};
         graph::UvRect region = (piece.mapping == UvMapping::Regions) ? *RegionFor(material.layout, piece.kind) : whole;
         float repeat = 1.0f;
+        // 帯の形のピース（辺と、切り分けた角の区間）。u が長さ方向に 0 〜 length。
+        const bool strip = (piece.kind == PieceKind::Edge || piece.length > 0.0f);
         if (planar) {
             // 区画は使わない。
-        } else if (piece.kind == PieceKind::Edge) {
+        } else if (piece.kind == PieceKind::Edge || (strip && piece.mapping != UvMapping::Regions)) {
             // 区画が無ければ（tile のマテリアルに線を貼った）、全体を辺として使う。
             if (region.IsEmpty()) region = {0.0f, 0.0f, 1.0f, 1.0f};
             // 1 タイルの長さ（帯の幅を 1 とする）は、区画の縦横比（ピクセル）。
+            // 切り分けた角の区間も、既定の UV では辺と同じ細かさでタイルする（切り分けても見た目が変わらないように）。
             const float tileLength = (region.width * width) / (region.height * height);
             repeat = std::max(1.0f, std::round(piece.length / std::max(tileLength, 1.0e-6f)));
         } else if (region.IsEmpty()) {
@@ -96,9 +99,11 @@ bool AssignUvs(const Mesh& mesh, const MaterialInfo& material, AssetLayer& out, 
                 MeshVertex vertex = mesh.vertices[source];
                 if (planar) {
                     vertex.uv = {vertex.uv.x / tileU, vertex.uv.y / tileV};
-                } else if (piece.kind == PieceKind::Edge) {
-                    vertex.uv = {region.x + ((piece.length > 0.0f) ? vertex.uv.x / piece.length : 0.0f) * repeat * region.width,
-                                 region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
+                } else if (strip) {
+                    float along = (piece.length > 0.0f) ? vertex.uv.x / piece.length : 0.0f;
+                    // 角の区間は、辺の上へ延ばした重なりの部分（0〜1 の外）を、縁で止める。区画へ割り付けたときは 1 枚だけ貼る。
+                    if (piece.kind != PieceKind::Edge) along = std::clamp(along, 0.0f, 1.0f);
+                    vertex.uv = {region.x + along * repeat * region.width, region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
                 } else {
                     vertex.uv = {region.x + std::clamp(vertex.uv.x, 0.0f, 1.0f) * region.width,
                                  region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
