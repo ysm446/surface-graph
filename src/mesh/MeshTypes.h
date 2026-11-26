@@ -24,8 +24,15 @@ struct Path {
 // ピースの種類。マテリアルを繋いだとき、種類ごとにテクスチャの区画へ割り付ける。
 enum class PieceKind { Fill, Edge, OuterCorner, InnerCorner, StartCap, EndCap };
 
+// UV の割り付け方。メッシュグラフの UV のノードが、ピースごとに決める。
+//   Default: 既定。塗りは位置をタイルの実寸で割る。帯のピースは、テクスチャの全体を使う
+//            （辺は u を長さ方向にタイルし、角と端はテクスチャの全体を 1 枚貼る）。マテリアルの区画は見ない
+//   Regions: 帯のピースを、マテリアルの区画（辺、外角、内角、始端、終端）へ割り付ける（mesh.uv_regions）
+//   Planar:  ピースの種類によらず、真上から投影する（mesh.uv_planar。uv に投影した座標が入る）
+enum class UvMapping { Default, Regions, Planar };
+
 // uv はピース内の UV。テクスチャ上の UV は、マテリアルを繋いだ時点で決まる。
-//   Fill:   位置そのもの（メートル）
+//   Fill:   位置そのもの（メートル）。mesh.uv_planar を通すと、ずらして回した座標になる
 //   Edge:   u = ピースの始点からの長さ（帯の幅を 1 とする）、v = 外側 0 〜 内側 1
 //   角と端: 0〜1 の正方形。入ってくる辺の向きを u、外側 0 〜 内側 1 を v とする
 //           （辺の上へ延ばした重なりの部分は 0〜1 の外へはみ出す）
@@ -44,6 +51,7 @@ struct Piece {
     uint32_t indexCount = 0;
     // Edge だけ。帯の幅を 1 とした長さ（u の終わりの値）。
     float length = 0.0f;
+    UvMapping mapping = UvMapping::Default;
 
     bool operator==(const Piece&) const = default;
 };

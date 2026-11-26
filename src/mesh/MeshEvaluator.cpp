@@ -16,6 +16,7 @@ enum PathPointsParam { kPointsPoints, kPointsClosed, kPointsCurve, kPointsRoundi
 enum PathRectParam { kRectWidth, kRectHeight };
 enum StrokeParam { kStrokeWidth, kStrokeAlign, kStrokeCorner, kStrokeSegments, kStrokeCaps, kStrokeOverlap };
 enum OutputParam { kOutputName };
+enum UvPlanarParam { kPlanarScale, kPlanarOffset, kPlanarRotation };
 
 // FNV-1a。
 struct Hasher {
@@ -110,6 +111,12 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
         } else {
             result.mesh = std::make_shared<const Mesh>(MergeMeshes(meshes));
         }
+    } else if (type == "mesh.uv_regions") {
+        result.mesh = std::make_shared<const Mesh>(ApplyUvRegions(*inputs[0]->mesh));
+    } else if (type == "mesh.uv_planar") {
+        result.mesh = std::make_shared<const Mesh>(ApplyUvPlanar(*inputs[0]->mesh, params[kPlanarScale].f[0],
+                                                                 Point2{params[kPlanarOffset].f[0], params[kPlanarOffset].f[1]},
+                                                                 params[kPlanarRotation].f[0]));
     } else if (type == "mesh.output") {
         result.mesh = inputs[0]->mesh;
     } else {

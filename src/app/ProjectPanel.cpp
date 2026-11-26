@@ -2021,8 +2021,7 @@ void Application::UpdateMeshPreview() {
         for (const mesh::MeshOutput& output : m_meshEvaluator.Outputs(m_graph)) {
             if (output.mesh == nullptr) continue;
             mesh::MaterialInfo info;
-            const bool hasBandPieces = std::any_of(output.mesh->pieces.begin(), output.mesh->pieces.end(),
-                                                   [](const mesh::Piece& piece) { return piece.kind != mesh::PieceKind::Fill; });
+            const bool hasBandPieces = mesh::UsesUvRegions(*output.mesh);
             info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
             engine::AssetPreviewOverlay overlay;
             std::string error;
@@ -2054,10 +2053,9 @@ void Application::UpdateMeshPreview() {
     m_meshPreview.hasMesh = true;
     if (m_meshPreview.assetLayer < 0) {
         mesh::MaterialInfo info;
-        // 区画は、帯のピース（辺、角、端）を持つメッシュにだけ要る。塗りだけのメッシュは、タイル（区画なし）で割り付ける
-        // （塗りに帯用の区画の図を出すと、関係のない枠が UV の表示に出てしまう）。
-        const bool hasBandPieces = std::any_of(result->mesh->pieces.begin(), result->mesh->pieces.end(),
-                                               [](const mesh::Piece& piece) { return piece.kind != mesh::PieceKind::Fill; });
+        // 区画の確認用の絵は、UV 区画のノードを通したメッシュにだけ出す。ほか（塗り、既定の UV の帯）は、
+        // タイル（区画なし）で割り付けて、UV チェッカーを貼る。
+        const bool hasBandPieces = mesh::UsesUvRegions(*result->mesh);
         info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
         std::string error;
         m_meshPreview.layout = info.layout;
@@ -2130,9 +2128,8 @@ void Application::UpdateProjectView() {
         info.size = graph::GraphSize(material->graph);
         info.tileSize = material->tileSize;
     } else {
-        // UpdateMeshPreview と同じ。塗りだけのメッシュはタイル、帯のピースがあれば角つきの帯の既定の配置。
-        const bool hasBandPieces = std::any_of(output->mesh->pieces.begin(), output->mesh->pieces.end(),
-                                               [](const mesh::Piece& piece) { return piece.kind != mesh::PieceKind::Fill; });
+        // UpdateMeshPreview と同じ。UV 区画のノードを通したメッシュだけ、角つきの帯の既定の配置。ほかはタイル。
+        const bool hasBandPieces = mesh::UsesUvRegions(*output->mesh);
         info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
     }
     std::string error;
@@ -2201,7 +2198,8 @@ void Application::DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax) {
         } else if (m_meshPreview.hasMesh) {
             layer = &m_meshPreview.layer;
             layout = m_meshPreview.layout;
-            caption = ui::Tr("マテリアルなし（既定の区画）", "No material (default layout)");
+            caption = (layout.kind == graph::LayoutKind::Tile) ? ui::Tr("マテリアルなし", "No material")
+                                                              : ui::Tr("マテリアルなし（既定の区画）", "No material (default layout)");
         } else if (!m_meshPreview.error.empty()) {
             hint = m_meshPreview.error;
         } else if (m_meshPreview.path != nullptr) {
@@ -2215,7 +2213,8 @@ void Application::DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax) {
             layer = &m_projectView.layer;
             if (layer->materialId == 0) {
                 layout = m_projectView.layout;
-                caption = ui::Tr("マテリアルなし（既定の区画）", "No material (default layout)");
+                caption = (layout.kind == graph::LayoutKind::Tile) ? ui::Tr("マテリアルなし", "No material")
+                                                              : ui::Tr("マテリアルなし（既定の区画）", "No material (default layout)");
             }
         } else {
             hint = m_projectView.error.empty() ? std::string(ui::Tr("この出力にはメッシュがありません。", "This output has no mesh.")) : m_projectView.error;

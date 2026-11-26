@@ -271,7 +271,7 @@
             "id": 4,
             "type": "mesh.output",
             "pos": [
-              600,
+              900,
               -160
             ],
             "params": {
@@ -282,12 +282,21 @@
             "id": 5,
             "type": "mesh.output",
             "pos": [
-              600,
+              900,
               160
             ],
             "params": {
               "name": "Edge"
             }
+          },
+          {
+            "id": 6,
+            "type": "mesh.uv_regions",
+            "pos": [
+              600,
+              160
+            ],
+            "params": {}
           }
         ],
         "links": [
@@ -310,9 +319,15 @@
             "toPin": "Mesh"
           },
           {
-            "from": 3,
+            "from": 6,
             "fromPin": "Out",
             "to": 5,
+            "toPin": "Mesh"
+          },
+          {
+            "from": 3,
+            "fromPin": "Out",
+            "to": 6,
             "toPin": "Mesh"
           }
         ]
@@ -411,12 +426,21 @@
             "id": 3,
             "type": "mesh.output",
             "pos": [
-              600,
+              900,
               0
             ],
             "params": {
               "name": "Crack"
             }
+          },
+          {
+            "id": 4,
+            "type": "mesh.uv_regions",
+            "pos": [
+              600,
+              0
+            ],
+            "params": {}
           }
         ],
         "links": [
@@ -427,9 +451,15 @@
             "toPin": "Path"
           },
           {
-            "from": 2,
+            "from": 4,
             "fromPin": "Out",
             "to": 3,
+            "toPin": "Mesh"
+          },
+          {
+            "from": 2,
+            "fromPin": "Out",
+            "to": 4,
             "toPin": "Mesh"
           }
         ]

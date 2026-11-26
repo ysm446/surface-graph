@@ -300,6 +300,35 @@ Mesh MergeMeshes(const std::vector<const Mesh*>& meshes) {
     return result;
 }
 
+Mesh ApplyUvRegions(const Mesh& mesh) {
+    Mesh result = mesh;
+    for (Piece& piece : result.pieces) {
+        if (piece.kind != PieceKind::Fill && piece.mapping != UvMapping::Planar) piece.mapping = UvMapping::Regions;
+    }
+    return result;
+}
+
+Mesh ApplyUvPlanar(const Mesh& mesh, float scale, Point2 offset, float rotationDegrees) {
+    Mesh result = mesh;
+    const float safeScale = std::max(std::abs(scale), 1.0e-4f);
+    const float angle = rotationDegrees * 3.14159265358979f / 180.0f;
+    const float c = std::cos(angle), s = std::sin(angle);
+    // 絵を angle だけ回すので、座標は逆に回す。
+    for (MeshVertex& vertex : result.vertices) {
+        const float x = vertex.position.x - offset.x, y = vertex.position.y - offset.y;
+        vertex.uv = {(c * x + s * y) / safeScale, (-s * x + c * y) / safeScale};
+    }
+    for (Piece& piece : result.pieces) piece.mapping = UvMapping::Planar;
+    return result;
+}
+
+bool UsesUvRegions(const Mesh& mesh) {
+    for (const Piece& piece : mesh.pieces) {
+        if (piece.mapping == UvMapping::Regions) return true;
+    }
+    return false;
+}
+
 Path MakeRectPath(float width, float height) {
     const float x = width * 0.5f;
     const float y = height * 0.5f;

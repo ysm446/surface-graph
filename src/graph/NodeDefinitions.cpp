@@ -951,8 +951,51 @@ std::vector<NodeDef> BuildDefs() {
                   {"角と端のピースを、辺の上へ延ばして重ねる長さ（帯の幅に対する比）。延ばした先で透明になる。",
                    "How far corner and end pieces extend over the edges, as a ratio of the band width. They fade out at the far end."}),
         };
-        def.tooltip = {"パスに沿った帯。u は帯の長さ方向（幅を 1 とする）、v は外側が 0、内側が 1。",
-                       "A band along a path. U runs along the band (in band widths); V is 0 on the outside and 1 on the inside."};
+        def.tooltip = {"パスに沿った帯。u は帯の長さ方向（幅を 1 とする）、v は外側が 0、内側が 1。"
+                       "UV は既定のままで、テクスチャの全体を使う（辺は長さ方向にタイルする）。マテリアルの区画"
+                       "（辺、角、端）へ割り付けるには、UV 区画のノードを通す。",
+                       "A band along a path. U runs along the band (in band widths); V is 0 on the outside and 1 on the inside. "
+                       "The UVs stay at their defaults and use the whole texture (edges tile along the band). "
+                       "Pass it through a UV Regions node to map it to the regions of a material (edge, corners, ends)."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
+        def.type = "mesh.uv_regions";
+        def.label = {"UV 区画", "UV Regions"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {{"Mesh", {"メッシュ", "Mesh"}, PinType::Mesh}};
+        def.outputs = {meshOut};
+        def.tooltip = {"帯のピース（辺、外角、内角、始端、終端）を、マテリアルの区画へ割り付ける。区画の位置は、繋いだマテリアルの"
+                       "「区画の配置」が決める。角や端のピースがあるのに、マテリアルにその区画が無いとエラーになる。"
+                       "塗りと、UV 平面を通したピースは変えない。",
+                       "Maps the pieces of a band (edge, outer corner, inner corner, start, end) to the regions of the material. "
+                       "The regions come from the layout of the connected material. It is an error if the mesh has corner or end pieces "
+                       "and the material has no region for them. Fills and pieces that went through UV Planar are left as they are."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
+        def.type = "mesh.uv_planar";
+        def.label = {"UV 平面", "UV Planar"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {{"Mesh", {"メッシュ", "Mesh"}, PinType::Mesh}};
+        def.outputs = {meshOut};
+        def.params = {
+            Float("scale", {"倍率", "Scale"}, 1.0f, 0.05f, 20.0f,
+                  {"絵の大きさの倍率。2 にすると、絵が 2 倍の大きさで貼られる（マテリアルの「タイルの実寸」に掛かる）。",
+                   "Scale of the image. 2 makes the image twice as large (it multiplies the tile size of the material)."}),
+            Float2("offset", {"オフセット", "Offset"}, 0.0f, 0.0f, -10.0f, 10.0f,
+                   {"絵の原点の位置（メートル。X と Z）。", "Position of the origin of the image, in meters (X and Z)."}),
+            Float("rotation", {"回転", "Rotation"}, 0.0f, -180.0f, 180.0f,
+                  {"絵を回す角度（度。上から見て時計回り）。", "Rotation of the image in degrees (clockwise seen from above)."}),
+        };
+        def.tooltip = {"メッシュの全部のピースに、真上から UV を投影する。塗りの絵をずらす、回す、大きさを変えるのに使う。"
+                       "帯に通すと、帯にも真上からの絵が貼られる（区画は使わない）。",
+                       "Projects UVs from above onto every piece of the mesh. Use it to move, rotate and scale the image of a fill. "
+                       "On a band, the band also gets the image from above (regions are not used)."};
         defs.push_back(def);
     }
     {

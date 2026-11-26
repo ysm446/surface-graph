@@ -47,4 +47,15 @@ bool BuildStroke(const Path& path, const StrokeOptions& options, Mesh& out, std:
 // null は飛ばす。ピースの種類はそのまま残るので、塗りと帯をまとめても、UV はピースごとに割り付けられる。
 Mesh MergeMeshes(const std::vector<const Mesh*>& meshes);
 
+// 帯のピース（辺、角、端）を、マテリアルの区画へ割り付けるようにする（UvMapping::Regions）。
+// 塗りと、真上から投影したピースはそのまま。
+Mesh ApplyUvRegions(const Mesh& mesh);
+
+// 全部のピースを、真上から投影する（UvMapping::Planar）。uv = 回す(位置 - offset) / scale（メートル）。
+// マテリアルを繋いだとき、さらにタイルの実寸で割る。rotationDegrees は、上から見て時計回りに絵が回る向き。
+Mesh ApplyUvPlanar(const Mesh& mesh, float scale, Point2 offset, float rotationDegrees);
+
+// 区画へ割り付けるピースを持つか（マテリアルが無いときの確認用の絵を選ぶのに使う）。
+bool UsesUvRegions(const Mesh& mesh);
+
 }  // namespace sg::mesh

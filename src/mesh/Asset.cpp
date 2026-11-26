@@ -68,15 +68,21 @@ bool AssignUvs(const Mesh& mesh, const MaterialInfo& material, AssetLayer& out, 
     std::vector<uint32_t> remap(mesh.vertices.size(), kUnmapped);
     std::vector<uint32_t> touched;
     for (const Piece& piece : mesh.pieces) {
-        graph::UvRect region = *RegionFor(material.layout, piece.kind);
+        // 真上からの投影（塗りと、UV 平面のノードを通したピース）か。
+        const bool planar = (piece.kind == PieceKind::Fill || piece.mapping == UvMapping::Planar);
+        // 区画を見るのは、UV 区画のノードを通したピースだけ。ほかは、テクスチャの全体を使う。
+        const graph::UvRect whole = {0.0f, 0.0f, 1.0f, 1.0f};
+        graph::UvRect region = (piece.mapping == UvMapping::Regions) ? *RegionFor(material.layout, piece.kind) : whole;
         float repeat = 1.0f;
-        if (piece.kind == PieceKind::Edge) {
+        if (planar) {
+            // 区画は使わない。
+        } else if (piece.kind == PieceKind::Edge) {
             // 区画が無ければ（tile のマテリアルに線を貼った）、全体を辺として使う。
             if (region.IsEmpty()) region = {0.0f, 0.0f, 1.0f, 1.0f};
             // 1 タイルの長さ（帯の幅を 1 とする）は、区画の縦横比（ピクセル）。
             const float tileLength = (region.width * width) / (region.height * height);
             repeat = std::max(1.0f, std::round(piece.length / std::max(tileLength, 1.0e-6f)));
-        } else if (piece.kind != PieceKind::Fill && region.IsEmpty()) {
+        } else if (region.IsEmpty()) {
             error = std::string(ui::Tr("マテリアルに区画がありません: ", "The material has no region for: ")) + PieceKindName(piece.kind) +
                     ui::Tr("（区画の配置を band-corners にする）", " (set the layout to band-corners)");
             return false;
@@ -88,18 +94,14 @@ bool AssignUvs(const Mesh& mesh, const MaterialInfo& material, AssetLayer& out, 
             const uint32_t source = mesh.indices[i];
             if (remap[source] == kUnmapped) {
                 MeshVertex vertex = mesh.vertices[source];
-                switch (piece.kind) {
-                    case PieceKind::Fill:
-                        vertex.uv = {vertex.position.x / tileU, vertex.position.y / tileV};
-                        break;
-                    case PieceKind::Edge:
-                        vertex.uv = {region.x + ((piece.length > 0.0f) ? vertex.uv.x / piece.length : 0.0f) * repeat * region.width,
-                                     region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
-                        break;
-                    default:
-                        vertex.uv = {region.x + std::clamp(vertex.uv.x, 0.0f, 1.0f) * region.width,
-                                     region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
-                        break;
+                if (planar) {
+                    vertex.uv = {vertex.uv.x / tileU, vertex.uv.y / tileV};
+                } else if (piece.kind == PieceKind::Edge) {
+                    vertex.uv = {region.x + ((piece.length > 0.0f) ? vertex.uv.x / piece.length : 0.0f) * repeat * region.width,
+                                 region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
+                } else {
+                    vertex.uv = {region.x + std::clamp(vertex.uv.x, 0.0f, 1.0f) * region.width,
+                                 region.y + std::clamp(vertex.uv.y, 0.0f, 1.0f) * region.height};
                 }
                 Point2 tangent = tangentSum[source];
                 const float length = std::hypot(tangent.x, tangent.y);
