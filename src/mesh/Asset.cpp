@@ -69,14 +69,18 @@ bool AssignUvs(const Mesh& mesh, const MaterialInfo& material, AssetLayer& out, 
     std::vector<uint32_t> touched;
     for (const Piece& piece : mesh.pieces) {
         // 真上からの投影（塗りと、UV 平面のノードを通したピース）か。
-        const bool planar = (piece.kind == PieceKind::Fill || piece.mapping == UvMapping::Planar);
+        const bool planar = (piece.mapping != UvMapping::Explicit && (piece.kind == PieceKind::Fill || piece.mapping == UvMapping::Planar));
         // 区画を見るのは、UV 区画のノードを通したピースだけ。ほかは、テクスチャの全体を使う。
         const graph::UvRect whole = {0.0f, 0.0f, 1.0f, 1.0f};
         graph::UvRect region = (piece.mapping == UvMapping::Regions) ? *RegionFor(material.layout, piece.kind) : whole;
         float repeat = 1.0f;
+        // UV 額縁のノードを通したピース。uv はもうテクスチャ上の UV なので、そのまま使う。
+        const bool explicitUv = (piece.mapping == UvMapping::Explicit);
         // 帯の形のピース（辺と、切り分けた角の区間）。u が長さ方向に 0 〜 length。
         const bool strip = (piece.kind == PieceKind::Edge || piece.length > 0.0f);
-        if (planar) {
+        if (explicitUv) {
+            // 何も決めない。
+        } else if (planar) {
             // 区画は使わない。
         } else if (piece.kind == PieceKind::Edge || (strip && piece.mapping != UvMapping::Regions)) {
             // 区画が無ければ（tile のマテリアルに線を貼った）、全体を辺として使う。
@@ -97,7 +101,9 @@ bool AssignUvs(const Mesh& mesh, const MaterialInfo& material, AssetLayer& out, 
             const uint32_t source = mesh.indices[i];
             if (remap[source] == kUnmapped) {
                 MeshVertex vertex = mesh.vertices[source];
-                if (planar) {
+                if (explicitUv) {
+                    // そのまま。
+                } else if (planar) {
                     vertex.uv = {vertex.uv.x / tileU, vertex.uv.y / tileV};
                 } else if (strip) {
                     float along = (piece.length > 0.0f) ? vertex.uv.x / piece.length : 0.0f;

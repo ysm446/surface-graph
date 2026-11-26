@@ -26,6 +26,7 @@ enum StrokeParam {
 };
 enum OutputParam { kOutputName };
 enum UvPlanarParam { kPlanarScale, kPlanarOffset, kPlanarRotation };
+enum UvFrameParam { kFrameInset, kFrameThickness, kFrameAngle };
 
 // FNV-1a。
 struct Hasher {
@@ -147,6 +148,12 @@ void Compute(const graph::Node& node, const std::vector<const NodeResult*>& inpu
         result.mesh = std::make_shared<const Mesh>(ApplyUvPlanar(*meshes[0], params[kPlanarScale].f[0],
                                                                  Point2{params[kPlanarOffset].f[0], params[kPlanarOffset].f[1]},
                                                                  params[kPlanarRotation].f[0]));
+    } else if (type == "mesh.uv_frame") {
+        FrameOptions options;
+        options.inset = params[kFrameInset].f[0];
+        options.thickness = params[kFrameThickness].f[0];
+        options.angleTolerance = params[kFrameAngle].f[0];
+        result.mesh = std::make_shared<const Mesh>(ApplyUvFrame(*meshes[0], options));
     } else if (type == "mesh.output") {
         result.mesh = meshes[0];
     } else {

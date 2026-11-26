@@ -176,6 +176,10 @@ struct StrokeBuilder {
             ++sectionCount;
         };
 
+        // 頂点 i（1 〜 segmentCount - 1）が、真っ直ぐな断面を足すほどの角か。
+        const auto bends = [&](size_t i) {
+            return std::abs(std::atan2(Cross(directions[i - 1], directions[i]), Dot(directions[i - 1], directions[i]))) > kCornerTurn;
+        };
         float distance = 0.0f;
         {
             const Point2 start = Add(points[0], Mul(directions[0], startTrim));
@@ -202,8 +206,12 @@ struct StrokeBuilder {
             // 歪むので、角の手前と先に真っ直ぐな断面を入れて、歪みを角のまわりだけに収める。
             const float before = (i == 1) ? lengths[0] - startTrim : lengths[i - 1];
             const float after = (i + 1 == segmentCount) ? lengths[i] + endTrim : lengths[i];
+            // 隣の頂点も角なら、間の辺を半分ずつ使う。隣がピースの端か、緩い折れ（真っ直ぐな断面を足さない頂点）なら、
+            // その辺を全部使える（半分で止めると、短い辺で内側の縁が折り返す）。
+            const float beforeLimit = (i == 1 || !bends(i - 1)) ? before : before * 0.5f;
+            const float afterLimit = (i + 1 == segmentCount || !bends(i + 1)) ? after : after * 0.5f;
             const float reach = std::min({std::max(std::abs(offsetOuter), std::abs(offsetInner)) * std::abs(Cross(d1, d2)) / denominator,
-                                          before * 0.5f, after * 0.5f});
+                                          beforeLimit, afterLimit});
             // 緩い折れ（曲線をなぞった細かい折れ線）では断面がほとんど傾かないので、足さない（頂点が 3 倍に増えるだけになる）。
             const bool straighten = reach > 1.0e-5f && std::abs(turn) > kCornerTurn;
             if (straighten) {
@@ -343,7 +351,9 @@ Mesh ExtractPieces(const Mesh& mesh, PieceKind kind) {
 Mesh ApplyUvRegions(const Mesh& mesh) {
     Mesh result = mesh;
     for (Piece& piece : result.pieces) {
-        if (piece.kind != PieceKind::Fill && piece.mapping != UvMapping::Planar) piece.mapping = UvMapping::Regions;
+        if (piece.kind != PieceKind::Fill && piece.mapping != UvMapping::Planar && piece.mapping != UvMapping::Explicit) {
+            piece.mapping = UvMapping::Regions;
+        }
     }
     return result;
 }
@@ -359,6 +369,221 @@ Mesh ApplyUvPlanar(const Mesh& mesh, float scale, Point2 offset, float rotationD
         vertex.uv = {(c * x + s * y) / safeScale, (-s * x + c * y) / safeScale};
     }
     for (Piece& piece : result.pieces) piece.mapping = UvMapping::Planar;
+    return result;
+}
+
+namespace {
+
+// 向きを、上下左右のいちばん近い軸へ寄せる。
+Point2 SnapAxis(Point2 d) {
+    if (std::abs(d.x) >= std::abs(d.y)) return {d.x >= 0.0f ? 1.0f : -1.0f, 0.0f};
+    return {0.0f, d.y >= 0.0f ? 1.0f : -1.0f};
+}
+
+// テクスチャの枠は、画面で時計回り（上の辺は右へ、右の辺は下へ、下の辺は左へ、左の辺は上へ）に辿る。
+// 向き axis へ進む辺の、始まりの隅。辺の上の点は、隅 + axis * 道のり + 左の法線 * 縁からの深さ。
+Point2 SideOrigin(Point2 axis) {
+    if (axis.x > 0.5f) return {0.0f, 0.0f};
+    if (axis.y > 0.5f) return {1.0f, 0.0f};
+    if (axis.x < -0.5f) return {1.0f, 1.0f};
+    return {0.0f, 1.0f};
+}
+
+// 帯の形のピースの、外側の縁（v = 0）を u の順に並べたものと、帯の幅。
+struct StripRim {
+    std::vector<Point2> outer;
+    float width = 0.0f;
+    bool valid = false;
+};
+
+StripRim MeasureRim(const Mesh& mesh, const Piece& piece) {
+    StripRim rim;
+    std::vector<std::pair<float, Point2>> outer;
+    bool hasInner = false, hasOuter = false;
+    float innerU = 0.0f, outerU = 0.0f;
+    Point2 innerPoint{}, outerPoint{};
+    std::vector<char> seen(mesh.vertices.size(), 0);
+    for (uint32_t i = piece.firstIndex; i < piece.firstIndex + piece.indexCount && i < mesh.indices.size(); ++i) {
+        const uint32_t index = mesh.indices[i];
+        if (seen[index]) continue;
+        seen[index] = 1;
+        const MeshVertex& vertex = mesh.vertices[index];
+        if (vertex.uv.y < 1.0e-4f) {
+            outer.push_back({vertex.uv.x, vertex.position});
+            if (!hasOuter || vertex.uv.x < outerU) {
+                hasOuter = true;
+                outerU = vertex.uv.x;
+                outerPoint = vertex.position;
+            }
+        } else if (vertex.uv.y > 1.0f - 1.0e-4f && (!hasInner || vertex.uv.x < innerU)) {
+            hasInner = true;
+            innerU = vertex.uv.x;
+            innerPoint = vertex.position;
+        }
+    }
+    std::sort(outer.begin(), outer.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [u, point] : outer) {
+        if (rim.outer.empty() || Length(Sub(point, rim.outer.back())) > 1.0e-6f) rim.outer.push_back(point);
+    }
+    if (hasInner && hasOuter) rim.width = Length(Sub(innerPoint, outerPoint));
+    rim.valid = rim.outer.size() >= 2 && rim.width > 1.0e-6f;
+    return rim;
+}
+
+// 多角形（凸）を、u の範囲 [lo, hi] で切る。
+void ClipByU(std::vector<MeshVertex>& polygon, float bound, bool keepGreater) {
+    std::vector<MeshVertex> result;
+    const auto inside = [&](const MeshVertex& v) { return keepGreater ? v.uv.x >= bound : v.uv.x <= bound; };
+    for (size_t i = 0; i < polygon.size(); ++i) {
+        const MeshVertex& a = polygon[i];
+        const MeshVertex& b = polygon[(i + 1) % polygon.size()];
+        const bool aIn = inside(a), bIn = inside(b);
+        if (aIn) result.push_back(a);
+        if (aIn != bIn) {
+            const float t = (bound - a.uv.x) / (b.uv.x - a.uv.x);
+            MeshVertex cut;
+            cut.position = Add(a.position, Mul(Sub(b.position, a.position), t));
+            cut.uv = {bound, a.uv.y + (b.uv.y - a.uv.y) * t};
+            cut.alpha = a.alpha + (b.alpha - a.alpha) * t;
+            result.push_back(cut);
+        }
+    }
+    polygon = std::move(result);
+}
+
+}  // namespace
+
+Mesh ApplyUvFrame(const Mesh& mesh, const FrameOptions& options) {
+    const float inset = std::clamp(options.inset, 0.0f, 0.45f);
+    const float thickness = std::clamp(options.thickness, 0.01f, 0.5f - inset);
+    const float tolerance = std::clamp(options.angleTolerance, 0.0f, 45.0f) * 3.14159265358979f / 180.0f;
+
+    // ピースごとに、枠の角へ重ねるか（そのときの、位置から UV への写し方）を決める。
+    struct CornerMap {
+        bool use = false;
+        Point2 anchor{};    // メッシュの側の、帯の外側の縁の角（入ってくる縁と出ていく縁の交点）
+        Point2 uvAnchor{};  // テクスチャの側の、枠の外側の角
+        float cosine = 1.0f, sine = 0.0f, scale = 1.0f;
+        Point2 axisIn{}, axisOut{};
+    };
+    const auto mapCorner = [](const CornerMap& map, Point2 position) {
+        const Point2 local = Sub(position, map.anchor);
+        return Point2{map.uvAnchor.x + (local.x * map.cosine - local.y * map.sine) * map.scale,
+                      map.uvAnchor.y + (local.x * map.sine + local.y * map.cosine) * map.scale};
+    };
+    std::vector<CornerMap> corners(mesh.pieces.size());
+    std::vector<StripRim> rims(mesh.pieces.size());
+    // 角が使う範囲（枠の隅からの長さ）。まっすぐな部分は、その残り。
+    float cornerExtent = inset + thickness;
+    for (size_t p = 0; p < mesh.pieces.size(); ++p) {
+        const Piece& piece = mesh.pieces[p];
+        const bool strip = (piece.kind == PieceKind::Edge || piece.length > 0.0f);
+        if (!strip || piece.mapping == UvMapping::Planar) continue;
+        rims[p] = MeasureRim(mesh, piece);
+        const StripRim& rim = rims[p];
+        if (!rim.valid || piece.kind != PieceKind::OuterCorner) continue;
+        const Point2 first = Sub(rim.outer[1], rim.outer[0]);
+        const Point2 last = Sub(rim.outer.back(), rim.outer[rim.outer.size() - 2]);
+        const Point2 d1 = Mul(first, 1.0f / Length(first));
+        const Point2 d2 = Mul(last, 1.0f / Length(last));
+        const float turn = std::atan2(Cross(d1, d2), Dot(d1, d2));
+        if (std::abs(turn - 1.5707963f) > tolerance) continue;
+        CornerMap& map = corners[p];
+        map.use = true;
+        map.anchor = Add(rim.outer[0], Mul(d1, Cross(Sub(rim.outer.back(), rim.outer[0]), d2) / Cross(d1, d2)));
+        map.axisIn = SnapAxis(d1);
+        map.axisOut = {-map.axisIn.y, map.axisIn.x};
+        const Point2 origin = SideOrigin(map.axisIn);
+        map.uvAnchor = Add(origin, Add(Mul(map.axisIn, 1.0f - inset), Mul(map.axisOut, inset)));
+        const float angle = std::atan2(map.axisIn.y, map.axisIn.x) - std::atan2(d1.y, d1.x);
+        map.cosine = std::cos(angle);
+        map.sine = std::sin(angle);
+        map.scale = thickness / rim.width;
+        const Point2 outOrigin = SideOrigin(map.axisOut);
+        for (uint32_t i = piece.firstIndex; i < piece.firstIndex + piece.indexCount && i < mesh.indices.size(); ++i) {
+            const MeshVertex& vertex = mesh.vertices[mesh.indices[i]];
+            if (vertex.alpha < 0.999f) continue;  // 辺の上へ延ばした重なりは数えない
+            const Point2 uv = mapCorner(map, vertex.position);
+            cornerExtent = std::max(cornerExtent, 1.0f - Dot(Sub(uv, origin), map.axisIn));
+            cornerExtent = std::max(cornerExtent, Dot(Sub(uv, outOrigin), map.axisOut));
+        }
+    }
+    cornerExtent = std::clamp(cornerExtent, 0.0f, 0.45f);
+    const float straight = 1.0f - cornerExtent * 2.0f;
+
+    Mesh result;
+    constexpr uint32_t kUnmapped = 0xffffffffu;
+    std::vector<uint32_t> remap(mesh.vertices.size(), kUnmapped);
+    std::vector<uint32_t> touched;
+    for (size_t p = 0; p < mesh.pieces.size(); ++p) {
+        const Piece& piece = mesh.pieces[p];
+        Piece copy = piece;
+        copy.firstIndex = static_cast<uint32_t>(result.indices.size());
+        const uint32_t end = std::min<uint32_t>(piece.firstIndex + piece.indexCount, static_cast<uint32_t>(mesh.indices.size()));
+        if (corners[p].use || !rims[p].valid) {
+            // 枠の角へ重ねるピースは UV だけを書き換え、ほかのピースはそのまま写す。
+            touched.clear();
+            for (uint32_t i = piece.firstIndex; i < end; ++i) {
+                const uint32_t source = mesh.indices[i];
+                if (remap[source] == kUnmapped) {
+                    MeshVertex vertex = mesh.vertices[source];
+                    if (corners[p].use) vertex.uv = mapCorner(corners[p], vertex.position);
+                    remap[source] = static_cast<uint32_t>(result.vertices.size());
+                    touched.push_back(source);
+                    result.vertices.push_back(vertex);
+                }
+                result.indices.push_back(remap[source]);
+            }
+            for (const uint32_t source : touched) remap[source] = kUnmapped;
+            if (corners[p].use) copy.mapping = UvMapping::Explicit;
+        } else {
+            // 枠のまっすぐな部分へ。向きは、縁の始点から終点への向き（一周して戻るなら、最初の辺の向き）に近い辺。
+            const StripRim& rim = rims[p];
+            Point2 chord = Sub(rim.outer.back(), rim.outer.front());
+            if (Length(chord) < rim.width * 0.5f) chord = Sub(rim.outer[1], rim.outer[0]);
+            const Point2 axis = SnapAxis(chord);
+            const Point2 inward = {-axis.y, axis.x};
+            const Point2 origin = SideOrigin(axis);
+            // まっすぐな部分の長さ（帯の幅を 1 とする）で割って、くり返す回数を決める。
+            const float tileLength = straight / thickness;
+            const int repeats = std::clamp(static_cast<int>(std::round(piece.length / std::max(tileLength, 1.0e-4f))), 1, 4096);
+            const float step = piece.length / static_cast<float>(repeats);
+            std::vector<MeshVertex> polygon;
+            for (uint32_t i = piece.firstIndex; i + 2 < end + 0u && i + 2 < mesh.indices.size(); i += 3) {
+                const MeshVertex triangle[3] = {mesh.vertices[mesh.indices[i]], mesh.vertices[mesh.indices[i + 1]], mesh.vertices[mesh.indices[i + 2]]};
+                const float minU = std::min({triangle[0].uv.x, triangle[1].uv.x, triangle[2].uv.x});
+                const float maxU = std::max({triangle[0].uv.x, triangle[1].uv.x, triangle[2].uv.x});
+                const int firstTile = std::clamp(static_cast<int>(std::floor(minU / step)), 0, repeats - 1);
+                const int lastTile = std::clamp(static_cast<int>(std::floor(maxU / step)), 0, repeats - 1);
+                for (int tile = firstTile; tile <= lastTile; ++tile) {
+                    const float lo = static_cast<float>(tile) * step;
+                    const float hi = lo + step;
+                    polygon.assign(triangle, triangle + 3);
+                    // 両端のタイルは、0 より前と length より先（辺の上へ延ばした重なり）も受け持つ。
+                    if (tile > 0) ClipByU(polygon, lo, true);
+                    if (tile + 1 < repeats) ClipByU(polygon, hi, false);
+                    if (polygon.size() < 3) continue;
+                    const uint32_t base = static_cast<uint32_t>(result.vertices.size());
+                    for (MeshVertex vertex : polygon) {
+                        const float ratio = std::clamp((vertex.uv.x - lo) / step, 0.0f, 1.0f);
+                        const float along = cornerExtent + ratio * straight;
+                        const float depth = inset + std::clamp(vertex.uv.y, 0.0f, 1.0f) * thickness;
+                        vertex.uv = Add(origin, Add(Mul(axis, along), Mul(inward, depth)));
+                        result.vertices.push_back(vertex);
+                    }
+                    for (uint32_t k = 1; k + 1 < polygon.size(); ++k) {
+                        // 面積の無い三角形（切り口がちょうど頂点に当たった）は足さない。
+                        const Point2 a = polygon[0].position, b = polygon[k].position, c = polygon[k + 1].position;
+                        if (std::abs(Cross(Sub(b, a), Sub(c, a))) < 1.0e-12f) continue;
+                        result.indices.insert(result.indices.end(), {base, base + k, base + k + 1});
+                    }
+                }
+            }
+            copy.mapping = UvMapping::Explicit;
+        }
+        copy.indexCount = static_cast<uint32_t>(result.indices.size()) - copy.firstIndex;
+        result.pieces.push_back(copy);
+    }
     return result;
 }
 

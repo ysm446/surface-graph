@@ -64,6 +64,22 @@ Mesh ApplyUvRegions(const Mesh& mesh);
 // マテリアルを繋いだとき、さらにタイルの実寸で割る。rotationDegrees は、上から見て時計回りに絵が回る向き。
 Mesh ApplyUvPlanar(const Mesh& mesh, float scale, Point2 offset, float rotationDegrees);
 
+// UV 額縁。テクスチャに、縁から inset だけ内側に、太さ thickness の枠（角の丸い四角のリング）が描いてあるとして、
+// 帯をその枠へ割り付ける（どちらも UV の長さ。テクスチャは正方形を想定する）。
+//   - 90° に近い、左へ曲がる角の区間（帯のノードの「角を切り分ける」でできる OuterCorner）は、**形を変えずに**
+//     枠の角へ重ねる（回して、帯の幅が枠の太さになるように拡大するだけ）。入ってくる向きに近い辺の先の角を使う。
+//   - 辺と、それ以外の角の区間は、枠のまっすぐな部分を使う。向きに近い辺（上下左右）を選び、長さ方向は、
+//     まっすぐな部分が整数回くり返すようにメッシュを刻む。
+//   - まっすぐな部分の範囲は、角の区間が使った長さから決まる（帯のノードの「角の余白」を広げると、角が使う範囲が増える）。
+// 塗り、正方形の角ピース、端のピース、UV 平面を通したピースは変えない。
+struct FrameOptions {
+    float inset = 0.1f;
+    float thickness = 0.2f;
+    // 90° からこの角度（度）までのずれなら、枠の角を使う。
+    float angleTolerance = 15.0f;
+};
+Mesh ApplyUvFrame(const Mesh& mesh, const FrameOptions& options);
+
 // 区画へ割り付けるピースを持つか（マテリアルが無いときの確認用の絵を選ぶのに使う）。
 bool UsesUvRegions(const Mesh& mesh);
 

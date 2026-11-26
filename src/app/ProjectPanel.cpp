@@ -1096,14 +1096,17 @@ void Application::DrawProjectGraph() {
         else if (nodeCount == 0) m_projectSelected = 0;
     }
 
-    // 出力ピンのクリックで、その時点の出力だけを 3D ビューと 2D ビューに出す。同じピンをもう一度クリックすると、
-    // アセット全体の表示へ戻る。ピンは押した瞬間からリンクのドラッグが始まるので、同じピンの上でほとんど動かずに
+    // 出力ピンのクリックで、その時点の出力だけを 3D ビューと 2D ビューに出す。アセット出力ノードをクリックするか、
+    // 同じピンをもう一度クリックすると、アセット全体の表示へ戻る。ピンは押した瞬間からリンクのドラッグが始まるので、同じピンの上でほとんど動かずに
     // 離したときだけクリックとみなす（グラフのパネルと同じ）。
     {
         const uint64_t hoveredPin = static_cast<uint64_t>(ed::GetHoveredPin().Get());
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             m_pressedPin = hoveredPin;
             m_pressedPinPos = ImGui::GetMousePos();
+            // アセット出力ノードをクリックしたら、最終結果（アセット全体）の表示へ戻る。
+            const project::Node* clicked = m_project.FindNode(static_cast<uint64_t>(ed::GetHoveredNode().Get()));
+            if (clicked != nullptr && clicked->kind == project::NodeKind::Asset) m_projectView = {};
         }
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const ImVec2 released = ImGui::GetMousePos();

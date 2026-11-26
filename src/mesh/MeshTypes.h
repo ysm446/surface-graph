@@ -29,7 +29,8 @@ enum class PieceKind { Fill, Edge, OuterCorner, InnerCorner, StartCap, EndCap };
 //            （辺は u を長さ方向にタイルし、角と端はテクスチャの全体を 1 枚貼る）。マテリアルの区画は見ない
 //   Regions: 帯のピースを、マテリアルの区画（辺、外角、内角、始端、終端）へ割り付ける（mesh.uv_regions）
 //   Planar:  ピースの種類によらず、真上から投影する（mesh.uv_planar。uv に投影した座標が入る）
-enum class UvMapping { Default, Regions, Planar };
+//   Explicit: uv に、テクスチャ上の UV がそのまま入っている（mesh.uv_frame）。マテリアルを繋いでも変えない
+enum class UvMapping { Default, Regions, Planar, Explicit };
 
 // uv はピース内の UV。テクスチャ上の UV は、マテリアルを繋いだ時点で決まる。
 //   Fill:   位置そのもの（メートル）。mesh.uv_planar を通すと、ずらして回した座標になる

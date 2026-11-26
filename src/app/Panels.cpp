@@ -918,8 +918,8 @@ void Application::DrawView3dPanel() {
         if (!m_projectView.error.empty()) {
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::ErrorColor()), "%s", m_projectView.error.c_str());
         } else {
-            ImGui::TextDisabled("%s", ui::Tr("選んだ出力だけを表示中（ピンをもう一度クリックで全体）",
-                                             "Showing the picked output only (click the pin again for the whole asset)"));
+            ImGui::TextDisabled("%s", ui::Tr("選んだ出力だけを表示中（アセット出力ノードをクリックで全体）",
+                                             "Showing the picked output only (click the Asset Output node for the whole asset)"));
         }
     }
 

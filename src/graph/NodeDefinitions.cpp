@@ -1006,6 +1006,34 @@ std::vector<NodeDef> BuildDefs() {
     }
     {
         NodeDef def;
+        def.type = "mesh.uv_frame";
+        def.label = {"UV 額縁", "UV Frame"};
+        def.kind = GraphKind::Mesh;
+        def.category = NodeCategory::Mesh;
+        def.inputs = {{"Mesh", {"メッシュ", "Mesh"}, PinType::Mesh}};
+        def.outputs = {meshOut};
+        def.params = {
+            Float("inset", {"枠の余白", "Frame Inset"}, 0.1f, 0.0f, 0.4f,
+                  {"テクスチャの縁から、枠の外側までの距離（UV）。", "Distance from the border of the texture to the outside of the frame, in UV."}),
+            Float("thickness", {"枠の太さ", "Frame Thickness"}, 0.2f, 0.02f, 0.45f,
+                  {"テクスチャに描いた枠の太さ（UV）。帯の幅が、この太さに合うように貼られる。",
+                   "Thickness of the frame drawn in the texture, in UV. The band width is fitted to this thickness."}),
+            Float("angle", {"角とみなす範囲", "Corner Tolerance"}, 15.0f, 0.0f, 45.0f,
+                  {"90° からこの角度（度）までのずれなら、枠の角を使う。それより外れた角は、辺の絵を使う。",
+                   "Corners within this many degrees of 90 use the corner of the frame. Other corners use the edge image."}),
+        };
+        def.tooltip = {"テクスチャに、角の丸い四角の枠（リング）を 1 つ描いておき、帯をその枠へ割り付ける。"
+                       "90° に近い出っ張った角は、形を変えずに枠の角へ重ねる。辺とそれ以外の角は、枠のまっすぐな部分を、"
+                       "メッシュを刻んで整数回くり返す。帯のノードで「角を切り分ける」を入れておくこと"
+                       "（「角の余白」を広げると、枠の角が使う範囲が広がる）。テクスチャは正方形を想定する。",
+                       "Draw one frame (a rounded rectangular ring) in the texture and map the band onto it. "
+                       "Convex corners near 90 degrees are laid over the corners of the frame without changing their shape. "
+                       "Edges and other corners use the straight parts of the frame, repeated a whole number of times by cutting the mesh. "
+                       "Turn on Split Corners in the Band node (a larger Corner Margin makes the frame corners cover more). Assumes a square texture."};
+        defs.push_back(def);
+    }
+    {
+        NodeDef def;
         def.type = "mesh.uv_planar";
         def.label = {"UV 平面", "UV Planar"};
         def.kind = GraphKind::Mesh;
