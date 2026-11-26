@@ -334,7 +334,8 @@ void Application::DrawGraphNodeNotes() {
 
 void Application::DrawGraphNode(const graph::Node& node) {
     const graph::NodeDef& def = *node.def;
-    // メッシュグラフのノードは CPU で評価する。テクスチャを持たないので、サムネイルの代わりに中身の数を出す。
+    // メッシュグラフのノードは CPU で評価する。テクスチャを持たないので、サムネイルは真上からの図を図形で描き、
+    // 解像度の行の代わりに中身の数を出す。
     const bool meshGraph = (m_graph.kind == graph::GraphKind::Mesh);
     const mesh::NodeResult* meshResult = meshGraph ? m_meshEvaluator.Find(node.id) : nullptr;
     const engine::NodeResult* result = meshGraph ? nullptr : ActiveEvaluator().Result(node.id);
@@ -459,6 +460,11 @@ void Application::DrawGraphNode(const graph::Node& node) {
     }
 
     if (meshGraph) {
+        // サムネイル（パスかメッシュを真上から見た図）。ピンの下、中央に置く。
+        ImGui::Dummy({width, 6.0f});
+        ImGui::SetCursorPosX(rowStartX + (width - thumbnail) * 0.5f);
+        graphui::DrawShapeThumbnail(thumbnail, {(meshResult != nullptr) ? meshResult->mesh.get() : nullptr},
+                                    (meshResult != nullptr) ? meshResult->path.get() : nullptr);
         // パスなら頂点の数と開閉、メッシュなら頂点・三角形・ピースの数。補助の情報なので、文字は一回り小さくする。
         ImGui::Dummy({width, 4.0f});
         ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.8f);

@@ -56,7 +56,9 @@ struct StartupOptions {
     uint64_t enterNode = 0;                  // --enter-node <id>（スクリーンショットの確認用。プロジェクトのノードの中に入る）
     bool hasViewPitch = false;               // --view-pitch <ラジアン>（スクリーンショットの確認用。アセットの表示の視点の仰角。負で地面の下）
     float viewPitch = 0.0f;
+    bool meshMaterial = false;               // --mesh-material（スクリーンショットの確認用。メッシュの階層で、マテリアルを貼って表示する）
     bool wireframe = false;                  // --wireframe（スクリーンショットの確認用。3D ビューにワイヤーフレームを重ねる）
+    uint64_t viewProjectNode = 0;            // --view-project-node <id>（スクリーンショットの確認用。プロジェクトのノードの出力を表示する）
     int selectPathPoint = -1;                // --select-path-point <n>（スクリーンショットの確認用。パスの頂点を選ぶ。1 始まり、0 なら全部）
 };
 
@@ -311,6 +313,12 @@ private:
     engine::PreviewSettings m_assetViewSettings;
     bool m_view3dAsset = true;  // マテリアルの階層で、アセットに貼った表示にする
     bool m_assetWireframe = false;  // アセットの表示に、三角形の辺を黒い線で重ねる
+    // メッシュの階層の 3D ビューに、アセット全体をマテリアル付きで出すか。既定は偽で、このメッシュグラフの結果だけを
+    // マテリアルなし（区画の確認用の絵）で出す（メッシュの階層は、マテリアルを割り当てる前の段階なので）。
+    bool m_meshShowMaterial = false;
+    // マテリアルなしの表示で、表示中のノードがメッシュを持たないとき（パスなど）に出す、このグラフのメッシュ出力。
+    std::vector<engine::AssetPreviewOverlay> m_meshContext;
+    mesh::Asset m_emptyAsset;
     // プロジェクトのグラフのパネル
     ax::NodeEditor::EditorContext* m_projectEditor = nullptr;
     std::vector<uint64_t> m_projectNodesToPlace;
@@ -344,6 +352,23 @@ private:
         std::string error;
     };
     MeshPreview m_meshPreview;
+    // プロジェクトの階層で表示中の出力（メッシュノードかマテリアルノードの出力ピンのクリックで選ぶ）。
+    // node が 0 なら、アセット全体を表示する。選んでいる間は、3D ビューと 2D ビューに、その時点の出力だけを出す:
+    // メッシュノードの出力はマテリアルなし（既定の区画の配置の確認用の絵）、マテリアルノードの出力はそのマテリアルを貼ったもの。
+    // アセット出力に繋いでいなくても出る。
+    struct ProjectView {
+        uint64_t node = 0;    // メッシュノードかマテリアルノード
+        uint64_t output = 0;  // メッシュノードのとき、メッシュ出力ノードの ID（0 なら最初の出力）
+        bool hasLayer = false;
+        mesh::AssetLayer layer;        // UV を割り付けたメッシュ。materialId が 0 ならマテリアルなし
+        graph::MaterialLayout layout;  // マテリアルなしのときの、既定の区画の配置
+        mesh::Asset asset;             // マテリアルがあるとき、layer 1 枚だけのアセット（3D ビューに渡す）
+        std::string error;
+    };
+    ProjectView m_projectView;
+    void UpdateProjectView();
+    // プロジェクトの階層で、選んだ出力だけを表示しているか。
+    bool IsolatedView() const { return m_level == Level::Project && m_projectView.node != 0; }
     PathEditHover m_path3dHover;
     // パスの編集（真上からのビューと 3D ビューで、パスノードの頂点を動かす）。
     uint64_t m_pathEditNode = 0;  // 編集しているパスノード

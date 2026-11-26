@@ -167,6 +167,8 @@ bool Application::Initialize(const StartupOptions& options) {
     if (options.showConfirm) m_openConfirm = true;
     if (options.uvChecker) m_previewSettings.uvChecker = m_assetViewSettings.uvChecker = true;
     if (options.wireframe) m_assetWireframe = true;
+    if (options.meshMaterial) m_meshShowMaterial = true;
+    if (options.viewProjectNode != 0) m_projectView.node = options.viewProjectNode;
     if (options.hasViewPitch) m_assetViewSettings.pitch = options.viewPitch;
     if (options.viewGrid) m_viewGrid = true;
     if (options.viewTiling) m_viewTiling = true;
@@ -312,6 +314,7 @@ void Application::DrawUi() {
     // メッシュグラフは CPU で評価する。ノードのエラーと真上からのビューに使うので、描く前に済ませる。
     if (m_level == Level::Mesh) m_meshEvaluator.Evaluate(m_graph);
     UpdateMeshPreview();
+    UpdateProjectView();
     HandleShortcuts();
     DrawMenuBar();
 

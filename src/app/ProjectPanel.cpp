@@ -412,8 +412,13 @@ void Application::RenderProjectView(ID3D12GraphicsCommandList* commandList) {
         return;
     }
     engine::AssetPreviewScene scene;
-    scene.asset = &m_asset;
-    for (const mesh::AssetLayer& layer : m_asset.layers) {
+    // プロジェクトの階層で出力を選んでいるときは、その出力だけを描く。
+    const bool isolated = IsolatedView();
+    // メッシュの階層は、既定ではマテリアルなし（アセットは描かず、このグラフの結果だけを重ね描きで出す）。
+    const bool bareMesh = (m_level == Level::Mesh && !m_meshShowMaterial);
+    const mesh::Asset& shownAsset = isolated ? m_projectView.asset : bareMesh ? m_emptyAsset : m_asset;
+    scene.asset = &shownAsset;
+    for (const mesh::AssetLayer& layer : shownAsset.layers) {
         if (std::any_of(scene.materials.begin(), scene.materials.end(),
                         [&](const engine::AssetPreviewMaterial& m) { return m.id == layer.materialId; })) {
             continue;
@@ -449,8 +454,16 @@ void Application::RenderProjectView(ID3D12GraphicsCommandList* commandList) {
         scene.hasCheckerTexture = true;
         scene.checkerTexture = checker->SrvIndex();
     }
+    // マテリアルの無い出力（メッシュノードの出力ピン）は、既定の区画の配置の確認用の絵で描く。
+    if (isolated && m_projectView.hasLayer && m_projectView.layer.materialId == 0) {
+        engine::AssetPreviewOverlay overlay;
+        overlay.layer = m_projectView.layer;
+        overlay.layout = m_projectView.layout;
+        scene.overlays.push_back(std::move(overlay));
+    }
     // メッシュの階層では、表示中の出力（まだアセットに入っていないもの）と、パスの線を重ねて描く。
     if (m_level == Level::Mesh) {
+        for (const engine::AssetPreviewOverlay& overlay : m_meshContext) scene.overlays.push_back(overlay);
         if (m_meshPreview.hasMesh && m_meshPreview.assetLayer < 0) {
             engine::AssetPreviewOverlay overlay;
             overlay.layer = m_meshPreview.layer;
@@ -492,7 +505,7 @@ void Application::RenderProjectView(ID3D12GraphicsCommandList* commandList) {
             maxZ = any ? std::max(maxZ, p.y) : p.y;
             any = true;
         };
-        for (const mesh::AssetLayer& layer : m_asset.layers) {
+        for (const mesh::AssetLayer& layer : shownAsset.layers) {
             for (const mesh::MeshVertex& vertex : layer.mesh.vertices) extend(vertex.position);
         }
         for (const engine::AssetPreviewOverlay& overlay : scene.overlays) {
@@ -636,11 +649,80 @@ void Application::DrawProjectAddPopup() {
     ImGui::EndPopup();
 }
 
+namespace graphui {
+
+void DrawShapeThumbnail(float size, const std::vector<const mesh::Mesh*>& meshes, const mesh::Path* path) {
+    const ImVec2 frameMin = ImGui::GetCursorScreenPos();
+    const ImVec2 frameMax(frameMin.x + size, frameMin.y + size);
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    // 形の縦横比で場所の大きさを変えない（パスを動かすたびにノードの高さが変わらないように、常に正方形）。
+    drawList->AddRectFilled(frameMin, frameMax, ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
+    ImGui::Dummy(ImVec2(size, size));
+
+    float minX = 0.0f, maxX = 0.0f, minZ = 0.0f, maxZ = 0.0f;
+    bool any = false;
+    const auto extend = [&](mesh::Point2 p) {
+        minX = any ? std::min(minX, p.x) : p.x;
+        maxX = any ? std::max(maxX, p.x) : p.x;
+        minZ = any ? std::min(minZ, p.y) : p.y;
+        maxZ = any ? std::max(maxZ, p.y) : p.y;
+        any = true;
+    };
+    for (const mesh::Mesh* mesh : meshes) {
+        if (mesh == nullptr) continue;
+        for (const mesh::MeshVertex& vertex : mesh->vertices) extend(vertex.position);
+    }
+    if (path != nullptr) {
+        for (const mesh::Point2& point : path->points) extend(point);
+    }
+    if (!any) return;
+
+    // 全体を、縁から少し内側に収める。向きは「真上」の図と同じ（X が右、Z が下）。
+    const float extent = std::max({maxX - minX, maxZ - minZ, 1.0e-3f});
+    const float scale = size * 0.84f / extent;
+    const ImVec2 origin = {(frameMin.x + frameMax.x) * 0.5f - (minX + maxX) * 0.5f * scale,
+                           (frameMin.y + frameMax.y) * 0.5f - (minZ + maxZ) * 0.5f * scale};
+    const auto toScreen = [&](mesh::Point2 p) { return ImVec2(origin.x + p.x * scale, origin.y + p.y * scale); };
+
+    // メッシュ。ピースの種類ごとの色で塗る（小さいので、三角形の辺は引かない）。重なりのフェードは透けさせる。
+    // 塗りのアンチエイリアスは切る（隣り合う三角形の境目に、縁のぼかしが筋になって出るため）。
+    const ImDrawListFlags savedFlags = drawList->Flags;
+    drawList->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+    for (const mesh::Mesh* mesh : meshes) {
+        if (mesh == nullptr) continue;
+        for (const mesh::Piece& piece : mesh->pieces) {
+            const ImVec4 base = kPieceColors[std::clamp(static_cast<int>(piece.kind), 0, 5)];
+            for (uint32_t i = piece.firstIndex; i + 2 < piece.firstIndex + piece.indexCount && i + 2 < mesh->indices.size(); i += 3) {
+                const mesh::MeshVertex& a = mesh->vertices[mesh->indices[i]];
+                const mesh::MeshVertex& b = mesh->vertices[mesh->indices[i + 1]];
+                const mesh::MeshVertex& c = mesh->vertices[mesh->indices[i + 2]];
+                const float alpha = std::clamp((a.alpha + b.alpha + c.alpha) / 3.0f, 0.0f, 1.0f);
+                drawList->AddTriangleFilled(toScreen(a.position), toScreen(b.position), toScreen(c.position),
+                                            ImGui::ColorConvertFloat4ToU32(ImVec4(base.x, base.y, base.z, 0.25f + 0.75f * alpha)));
+            }
+        }
+    }
+    drawList->Flags = savedFlags;
+
+    // パス。始点に丸を打つ（進む向きが分かるように）。
+    if (path != nullptr && !path->points.empty()) {
+        const ImU32 pathColor = ImGui::ColorConvertFloat4ToU32(PinColor(graph::PinType::Path));
+        const size_t count = path->points.size();
+        for (size_t i = 0; i + 1 < count || (path->closed && i < count); ++i) {
+            drawList->AddLine(toScreen(path->points[i]), toScreen(path->points[(i + 1) % count]), pathColor, 1.5f);
+        }
+        drawList->AddCircleFilled(toScreen(path->points[0]), 3.0f, pathColor, 12);
+    }
+}
+
+}  // namespace graphui
+
 void Application::DrawProjectNode(const project::Node& node) {
     struct Pin {
         std::string label;
         graph::PinType type = graph::PinType::Mesh;
         bool filled = false;
+        bool viewed = false;  // 表示中の出力（出力ピンのクリックで選んだもの）
     };
     std::vector<Pin> inputs, outputs;
     std::string title, error;
@@ -648,6 +730,8 @@ void Application::DrawProjectNode(const project::Node& node) {
     ImTextureID thumbnailTexture = ImTextureID{};
     bool hasThumbnail = false;
     float thumbnailAspect = 1.0f;
+    // メッシュノードのサムネイルは、出力のメッシュを全部重ねた、真上からの図。
+    std::vector<mesh::MeshOutput> meshOutputs;
     // 部分（マテリアルの付いたメッシュ）のピンは Value の色を借りる。
     const graph::PinType partType = graph::PinType::Value;
 
@@ -655,11 +739,14 @@ void Application::DrawProjectNode(const project::Node& node) {
         title = ui::Tr("メッシュ", "Mesh");
         mesh::MeshEvaluator& evaluator = m_meshNodeEvaluators[node.id];
         evaluator.Evaluate(node.meshGraph);
-        for (const mesh::MeshOutput& output : evaluator.Outputs(node.meshGraph)) {
+        meshOutputs = evaluator.Outputs(node.meshGraph);
+        hasThumbnail = true;
+        for (const mesh::MeshOutput& output : meshOutputs) {
             const bool linked = std::any_of(m_project.links.begin(), m_project.links.end(), [&](const project::Link& link) {
                 return link.fromNode == node.id && link.fromOutput == output.node;
             });
-            outputs.push_back({output.name.empty() ? std::string("Mesh") : output.name, graph::PinType::Mesh, linked});
+            outputs.push_back({output.name.empty() ? std::string("Mesh") : output.name, graph::PinType::Mesh, linked,
+                               m_projectView.node == node.id && m_projectView.output == output.node});
             if (output.mesh == nullptr && error.empty()) {
                 error = output.name + ": " + (output.error.empty() ? std::string(ui::Tr("メッシュがありません", "There is no mesh")) : output.error);
             }
@@ -672,7 +759,7 @@ void Application::DrawProjectNode(const project::Node& node) {
         inputs.push_back({"Mesh", graph::PinType::Mesh, m_project.InputLink(node.id) != nullptr});
         const project::Node* asset = m_project.FindAssetNode();
         const bool used = asset != nullptr && std::find(asset->layers.begin(), asset->layers.end(), node.id) != asset->layers.end();
-        outputs.push_back({"Part", partType, used});
+        outputs.push_back({"Part", partType, used, m_projectView.node == node.id});
         hasThumbnail = true;
         if (material == nullptr) {
             error = ui::Tr("マテリアルが見つかりません", "The material was not found");
@@ -702,6 +789,9 @@ void Application::DrawProjectNode(const project::Node& node) {
     }
 
     const bool hasError = !error.empty();
+    // 表示中の出力を持つノードは、グラフのパネルの「表示中のノード」と同じ色の枠にする。
+    const bool viewedNode = (m_projectView.node == node.id);
+    const ImVec4 viewedColor = {0.45f, 0.78f, 0.95f, 1.0f};
     const float thumbnail = ui::Scaled(ui::kNodeThumbnail);
     // 見た目はグラフのパネルのノード（GraphPanel.cpp）と揃える。
     const ImVec4 nodeBg = {0.102f, 0.102f, 0.102f, 0.98f};
@@ -719,10 +809,11 @@ void Application::DrawProjectNode(const project::Node& node) {
 
     ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(kNodePadding, kNodePadding, kNodePadding, kNodePadding));
     ed::PushStyleVar(ed::StyleVar_NodeRounding, 6.0f);
-    ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, hasError ? 2.0f : 1.0f);
+    ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, (hasError || viewedNode) ? 2.0f : 1.0f);
     ed::PushStyleVar(ed::StyleVar_SelectedNodeBorderWidth, 1.8f);
     ed::PushStyleColor(ed::StyleColor_NodeBg, nodeBg);
-    ed::PushStyleColor(ed::StyleColor_NodeBorder, hasError ? ImGui::ColorConvertU32ToFloat4(ui::ErrorColor()) : nodeBorder);
+    ed::PushStyleColor(ed::StyleColor_NodeBorder,
+                       hasError ? ImGui::ColorConvertU32ToFloat4(ui::ErrorColor()) : viewedNode ? viewedColor : nodeBorder);
 
     ed::BeginNode(ed::NodeId(node.id));
     ImGui::PushID(static_cast<int>(node.id));
@@ -782,6 +873,8 @@ void Application::DrawProjectNode(const project::Node& node) {
             const ImVec2 pivot = {nodeRightX, center.y};
             ed::PinPivotRect(pivot, pivot);
             drawCircle(center, graphui::PinColor(outputs[row].type), outputs[row].filled);
+            // 表示中の出力は、丸の外に輪を足す（丸の塗りは「繋がっている」の印に使っているため）。
+            if (outputs[row].viewed) drawList->AddCircle(center, radius + 3.0f, ImGui::ColorConvertFloat4ToU32(viewedColor), 20, 1.6f);
             ed::PinRect({labelMinX, rowScreenY}, {nodeRightX + radius, rowScreenY + rowHeight});
             ed::EndPin();
         }
@@ -792,7 +885,13 @@ void Application::DrawProjectNode(const project::Node& node) {
     if (hasThumbnail) {
         ImGui::Dummy({width, 6.0f});
         ImGui::SetCursorPosX(rowStartX + (width - thumbnail) * 0.5f);
-        ui::ThumbnailImage(thumbnailTexture, thumbnail, thumbnailAspect);
+        if (node.kind == project::NodeKind::Mesh) {
+            std::vector<const mesh::Mesh*> meshes;
+            for (const mesh::MeshOutput& output : meshOutputs) meshes.push_back(output.mesh.get());
+            graphui::DrawShapeThumbnail(thumbnail, meshes, nullptr);
+        } else {
+            ui::ThumbnailImage(thumbnailTexture, thumbnail, thumbnailAspect);
+        }
     }
 
     ImGui::PopID();
@@ -995,6 +1094,45 @@ void Application::DrawProjectGraph() {
         const int nodeCount = (count > 0) ? ed::GetSelectedNodes(ids.data(), count) : 0;
         if (nodeCount == 1) m_projectSelected = static_cast<uint64_t>(ids[0].Get());
         else if (nodeCount == 0) m_projectSelected = 0;
+    }
+
+    // 出力ピンのクリックで、その時点の出力だけを 3D ビューと 2D ビューに出す。同じピンをもう一度クリックすると、
+    // アセット全体の表示へ戻る。ピンは押した瞬間からリンクのドラッグが始まるので、同じピンの上でほとんど動かずに
+    // 離したときだけクリックとみなす（グラフのパネルと同じ）。
+    {
+        const uint64_t hoveredPin = static_cast<uint64_t>(ed::GetHoveredPin().Get());
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            m_pressedPin = hoveredPin;
+            m_pressedPinPos = ImGui::GetMousePos();
+        }
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            const ImVec2 released = ImGui::GetMousePos();
+            const float moved = std::abs(released.x - m_pressedPinPos.x) + std::abs(released.y - m_pressedPinPos.y);
+            if (m_pressedPin != 0 && hoveredPin == m_pressedPin && moved < 6.0f) {
+                uint64_t pinNode = 0;
+                bool pinOutput = false;
+                int pinIndex = 0;
+                graphui::DecodePinId(m_pressedPin, pinNode, pinOutput, pinIndex);
+                const project::Node* node = pinOutput ? m_project.FindNode(pinNode) : nullptr;
+                bool valid = false;
+                uint64_t outputId = 0;
+                if (node != nullptr && node->kind == project::NodeKind::Material) {
+                    valid = true;
+                } else if (node != nullptr && node->kind == project::NodeKind::Mesh) {
+                    const std::vector<mesh::MeshOutput> outputs = m_meshNodeEvaluators[node->id].Outputs(node->meshGraph);
+                    if (pinIndex >= 0 && pinIndex < static_cast<int>(outputs.size())) {
+                        outputId = outputs[static_cast<size_t>(pinIndex)].node;
+                        valid = true;
+                    }
+                }
+                if (valid) {
+                    const bool same = (m_projectView.node == pinNode && m_projectView.output == outputId);
+                    m_projectView.node = same ? 0 : pinNode;
+                    m_projectView.output = same ? 0 : outputId;
+                }
+            }
+            m_pressedPin = 0;
+        }
     }
 
     // ノードのダブルクリックで中に入る。
@@ -1855,7 +1993,12 @@ void Application::DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin
         }
     };
     drawList->PushClipRect(areaMin, areaMax, true);
-    for (const mesh::AssetLayer& layer : m_asset.layers) drawMesh(layer.mesh);
+    if (IsolatedView()) {
+        if (m_projectView.hasLayer) drawMesh(m_projectView.layer.mesh);
+    } else if (m_level != Level::Mesh || m_meshShowMaterial) {
+        for (const mesh::AssetLayer& layer : m_asset.layers) drawMesh(layer.mesh);
+    }
+    for (const engine::AssetPreviewOverlay& overlay : m_meshContext) drawMesh(overlay.layer.mesh);
     if (m_level == Level::Mesh && m_meshPreview.hasMesh && m_meshPreview.assetLayer < 0) drawMesh(m_meshPreview.layer.mesh);
     drawList->PopClipRect();
 }
@@ -1867,10 +2010,27 @@ void Application::DrawAssetWireframe(ImDrawList* drawList, const ImVec2& areaMin
 // まだなら、既定の区画の配置で UV を割り付けた確認用のメッシュを作る。
 void Application::UpdateMeshPreview() {
     m_meshPreview = {};
+    m_meshContext.clear();
     if (m_level != Level::Mesh) return;
     const graph::Node* viewed = m_graph.FindNode(m_viewNode);
     if (viewed == nullptr) viewed = m_graph.FindNode(m_selectedNode);
     const mesh::NodeResult* result = (viewed != nullptr) ? m_meshEvaluator.Find(viewed->id) : nullptr;
+    // マテリアルなしの表示で、表示中のノードがメッシュを持たない（パスを見ている、何も選んでいない）ときは、
+    // このグラフのメッシュ出力を全部出す（パスを動かした結果が見えるように）。
+    if (!m_meshShowMaterial && (result == nullptr || result->mesh == nullptr)) {
+        for (const mesh::MeshOutput& output : m_meshEvaluator.Outputs(m_graph)) {
+            if (output.mesh == nullptr) continue;
+            mesh::MaterialInfo info;
+            const bool hasBandPieces = std::any_of(output.mesh->pieces.begin(), output.mesh->pieces.end(),
+                                                   [](const mesh::Piece& piece) { return piece.kind != mesh::PieceKind::Fill; });
+            info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
+            engine::AssetPreviewOverlay overlay;
+            std::string error;
+            if (!mesh::AssignUvs(*output.mesh, info, overlay.layer, error)) continue;
+            overlay.layout = info.layout;
+            m_meshContext.push_back(std::move(overlay));
+        }
+    }
     if (result == nullptr) return;
     m_meshPreview.node = viewed->id;
     m_meshPreview.path = result->path;
@@ -1884,7 +2044,8 @@ void Application::UpdateMeshPreview() {
         const graph::Node* target = m_graph.FindNode(link.toNode);
         if (link.fromNode == viewed->id && target != nullptr && std::string_view(target->def->type) == "mesh.output") outputs.push_back(target->id);
     }
-    for (size_t i = 0; i < m_asset.layers.size(); ++i) {
+    // マテリアルなしの表示では、アセットのレイヤーを探さない（いつも確認用のメッシュを作る）。
+    for (size_t i = 0; m_meshShowMaterial && i < m_asset.layers.size(); ++i) {
         const mesh::AssetLayer& layer = m_asset.layers[i];
         if (layer.sourceNode == m_levelId && std::find(outputs.begin(), outputs.end(), layer.sourceOutput) != outputs.end()) {
             m_meshPreview.assetLayer = static_cast<int>(i);
@@ -1901,6 +2062,93 @@ void Application::UpdateMeshPreview() {
         std::string error;
         m_meshPreview.layout = info.layout;
         m_meshPreview.hasMesh = mesh::AssignUvs(*result->mesh, info, m_meshPreview.layer, error);
+    }
+}
+
+// プロジェクトの階層で表示中の出力（出力ピンのクリックで選ぶ）を、3D ビューと 2D ビューに出せる形にする。
+// メッシュノードの出力は、既定の区画の配置で UV を割り付ける（マテリアルなし）。マテリアルノードの出力は、
+// 入力に繋いだメッシュへ、そのマテリアルの区画で UV を割り付ける。アセット出力に繋いでいなくてもよい。
+void Application::UpdateProjectView() {
+    const uint64_t nodeId = m_projectView.node;
+    const uint64_t outputId = m_projectView.output;
+    m_projectView = {};
+    const project::Node* node = m_project.FindNode(nodeId);
+    // ノードが消えたら、アセット全体の表示へ戻る。
+    if (node == nullptr || node->kind == project::NodeKind::Asset) return;
+    m_projectView.node = nodeId;
+    m_projectView.output = outputId;
+    if (m_level != Level::Project) return;
+
+    const project::Node* meshNode = node;
+    uint64_t meshOutput = outputId;
+    const project::Material* material = nullptr;
+    if (node->kind == project::NodeKind::Material) {
+        material = m_project.FindMaterial(node->material);
+        if (material == nullptr) {
+            m_projectView.error = ui::Tr("マテリアルが見つかりません", "The material was not found");
+            return;
+        }
+        if (!material->loadError.empty()) {
+            m_projectView.error = material->loadError;
+            return;
+        }
+        const project::Link* link = m_project.InputLink(node->id);
+        if (link == nullptr) {
+            m_projectView.error = ui::Tr("マテリアルノードにメッシュを繋いでいません", "No mesh is connected to the material node");
+            return;
+        }
+        meshNode = m_project.FindNode(link->fromNode);
+        meshOutput = link->fromOutput;
+    }
+    if (meshNode == nullptr || meshNode->kind != project::NodeKind::Mesh) return;
+
+    mesh::MeshEvaluator& evaluator = m_meshNodeEvaluators[meshNode->id];
+    evaluator.Evaluate(meshNode->meshGraph);
+    const std::vector<mesh::MeshOutput> outputs = evaluator.Outputs(meshNode->meshGraph);
+    const mesh::MeshOutput* output = nullptr;
+    for (const mesh::MeshOutput& candidate : outputs) {
+        if (candidate.node == meshOutput) output = &candidate;
+    }
+    if (output == nullptr && meshOutput == 0 && !outputs.empty()) {
+        output = &outputs.front();
+        if (node->kind == project::NodeKind::Mesh) m_projectView.output = output->node;
+    }
+    if (output == nullptr) {
+        // 選んでいたメッシュ出力が消えた。アセット全体の表示へ戻る。
+        if (node->kind == project::NodeKind::Mesh) m_projectView = {};
+        else m_projectView.error = ui::Tr("メッシュ出力が見つかりません", "The mesh output was not found");
+        return;
+    }
+    if (output->mesh == nullptr) {
+        m_projectView.error = output->name + ": " + (output->error.empty() ? std::string(ui::Tr("メッシュがありません", "There is no mesh")) : output->error);
+        return;
+    }
+
+    mesh::MaterialInfo info;
+    if (material != nullptr) {
+        info.layout = material->graph.layout;
+        info.size = graph::GraphSize(material->graph);
+        info.tileSize = material->tileSize;
+    } else {
+        // UpdateMeshPreview と同じ。塗りだけのメッシュはタイル、帯のピースがあれば角つきの帯の既定の配置。
+        const bool hasBandPieces = std::any_of(output->mesh->pieces.begin(), output->mesh->pieces.end(),
+                                               [](const mesh::Piece& piece) { return piece.kind != mesh::PieceKind::Fill; });
+        info.layout = graph::MakeLayout(hasBandPieces ? graph::LayoutKind::BandCorners : graph::LayoutKind::Tile, info.size);
+    }
+    std::string error;
+    if (!mesh::AssignUvs(*output->mesh, info, m_projectView.layer, error)) {
+        m_projectView.error = error;
+        return;
+    }
+    m_projectView.layer.materialId = (material != nullptr) ? material->id : 0;
+    m_projectView.layer.name = output->name;
+    m_projectView.layer.sourceNode = meshNode->id;
+    m_projectView.layer.sourceOutput = output->node;
+    m_projectView.layout = info.layout;
+    m_projectView.hasLayer = true;
+    if (material != nullptr) {
+        m_projectView.asset.name = m_project.name;
+        m_projectView.asset.layers.push_back(m_projectView.layer);
     }
 }
 
@@ -1960,6 +2208,17 @@ void Application::DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax) {
             hint = ui::Tr("パスには UV がありません。3D ビューか「真上」で編集します。", "A path has no UV. Edit it in the 3D view or in Top.");
         } else {
             hint = ui::Tr("出力ピンをクリックすると、そのメッシュの UV が出ます。", "Click an output pin to show the UV of its mesh.");
+        }
+    } else if (IsolatedView()) {
+        // 出力ピンで選んだ出力。
+        if (m_projectView.hasLayer) {
+            layer = &m_projectView.layer;
+            if (layer->materialId == 0) {
+                layout = m_projectView.layout;
+                caption = ui::Tr("マテリアルなし（既定の区画）", "No material (default layout)");
+            }
+        } else {
+            hint = m_projectView.error.empty() ? std::string(ui::Tr("この出力にはメッシュがありません。", "This output has no mesh.")) : m_projectView.error;
         }
     } else {
         // 選んだノードがメッシュならそのメッシュのレイヤー、マテリアルならそのノードに繋いだメッシュのレイヤー。
@@ -2027,7 +2286,8 @@ void Application::DrawUvView(const ImVec2& areaMin, const ImVec2& areaMax) {
         }
         // 表示するものが替わったときと「全体」を押したときに、範囲を測り直す。
         const uint64_t key = 0x5555000000000000ull ^ (static_cast<uint64_t>(m_level) << 48) ^ (m_levelId << 24) ^
-                             (static_cast<uint64_t>(layer->sourceOutput) << 8) ^ m_meshPreview.node ^ (m_projectSelected << 12);
+                             (static_cast<uint64_t>(layer->sourceOutput) << 8) ^ m_meshPreview.node ^ (m_projectSelected << 12) ^
+                             (m_projectView.node << 36) ^ (m_projectView.output << 18);
         if (key != m_structureKey || m_structureFitPending) {
             m_structureKey = key;
             m_structureFitPending = false;
@@ -2142,6 +2402,12 @@ void Application::DrawTopDownView(const ImVec2& areaMin, const ImVec2& areaMax) 
         if (editNode != nullptr && editNode->id != shownNode && path == nullptr) {
             if (const mesh::NodeResult* result = m_meshEvaluator.Find(editNode->id)) path = result->path.get();
         }
+    } else if (IsolatedView()) {
+        // 出力ピンで選んだ出力だけ。
+        if (m_projectView.hasLayer) meshes.push_back(&m_projectView.layer.mesh);
+        caption = m_projectView.layer.name;
+        error = m_projectView.error;
+        shownNode = m_projectView.node ^ (m_projectView.output << 20);
     } else {
         for (const mesh::AssetLayer& layer : m_asset.layers) meshes.push_back(&layer.mesh);
         caption = ui::Tr("アセット", "Asset");

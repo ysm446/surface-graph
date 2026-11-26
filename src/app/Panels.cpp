@@ -912,6 +912,16 @@ void Application::DrawView3dPanel() {
         ImGui::SameLine();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::ErrorColor()), "%s", m_assetErrors.front().c_str());
     }
+    // 出力ピンで選んだ出力だけを表示しているときは、そのことを書く（アセット全体ではないと分かるように）。
+    if (assetView && IsolatedView()) {
+        ImGui::SameLine();
+        if (!m_projectView.error.empty()) {
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(ui::ErrorColor()), "%s", m_projectView.error.c_str());
+        } else {
+            ImGui::TextDisabled("%s", ui::Tr("選んだ出力だけを表示中（ピンをもう一度クリックで全体）",
+                                             "Showing the picked output only (click the pin again for the whole asset)"));
+        }
+    }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad * 1.5f, pad * 1.5f));
     if (ImGui::BeginPopup("##view3dSettings")) {
@@ -921,6 +931,14 @@ void Application::DrawView3dPanel() {
             if (assetView) {
                 ui::PropertyBool(ui::Tr("ワイヤーフレーム", "Wireframe"), &m_assetWireframe, false,
                                  ui::Tr("メッシュの上に、三角形の辺を黒い線で重ねる。", "Overlays the triangle edges as black lines on the meshes."));
+            }
+            // メッシュの階層は、マテリアルを割り当てる前の段階。既定ではマテリアルなしで出す。
+            if (assetView && m_level == Level::Mesh) {
+                ui::PropertyBool(ui::Tr("マテリアルを貼って表示", "Show with Materials"), &m_meshShowMaterial, false,
+                                 ui::Tr("アセット全体を、繋いだマテリアルを貼って表示する。切ると、このメッシュグラフの結果だけを、"
+                                        "マテリアルなし（UV の確認用の絵）で表示する。",
+                                        "Shows the whole asset with its materials. When off, only the result of this mesh graph is shown, "
+                                        "without materials (with the UV checker)."));
             }
             // タイルの数と視差は、球 / 平面の表示だけ（アセットの UV はメッシュが決め、デカールでは視差を使わない）。
             if (!assetView) {

@@ -42,6 +42,10 @@ sg::StartupOptions ParseCommandLine() {
         } else if (argument == L"--view-pitch" && i + 1 < argc) {
             options.viewPitch = std::clamp(static_cast<float>(::_wtof(argv[++i])), -1.5f, 1.5f);
             options.hasViewPitch = true;
+        } else if (argument == L"--view-project-node" && i + 1 < argc) {
+            options.viewProjectNode = static_cast<uint64_t>(::_wtoi64(argv[++i]));
+        } else if (argument == L"--mesh-material") {
+            options.meshMaterial = true;
         } else if (argument == L"--wireframe") {
             options.wireframe = true;
         } else if (argument == L"--select-path-point" && i + 1 < argc) {

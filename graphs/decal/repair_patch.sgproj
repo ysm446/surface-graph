@@ -247,7 +247,7 @@
             "type": "mesh.fill",
             "pos": [
               300,
-              -80
+              -160
             ],
             "params": {}
           },
@@ -256,7 +256,7 @@
             "type": "mesh.stroke",
             "pos": [
               300,
-              80
+              160
             ],
             "params": {
               "width": 0.2,
@@ -272,7 +272,7 @@
             "type": "mesh.output",
             "pos": [
               600,
-              -80
+              -160
             ],
             "params": {
               "name": "Patch"
@@ -283,7 +283,7 @@
             "type": "mesh.output",
             "pos": [
               600,
-              80
+              160
             ],
             "params": {
               "name": "Edge"
